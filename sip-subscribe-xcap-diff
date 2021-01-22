@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import os
 import random
@@ -17,7 +17,7 @@ from application.python.queue import EventQueue
 from eventlib.twistedutil import join_reactor
 from twisted.internet import reactor
 from twisted.internet.error import ReactorNotRunning
-from zope.interface import implements
+from zope.interface import implementer
 
 from sipsimple.account import Account, AccountManager, BonjourAccount
 from sipsimple.application import SIPApplication
@@ -67,7 +67,7 @@ class InputThread(Thread):
             self._old_terminal_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
             new[3] = new[3] & ~termios.ICANON & ~termios.ECHO
-            new[6][termios.VMIN] = '\000'
+            new[6][termios.VMIN] = b'\000'
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, new)
                 if select.select([fd], [], [], None)[0]:
@@ -78,8 +78,8 @@ class InputThread(Thread):
             return os.read(fd, 4192)
 
 
+@implementer(IObserver)
 class SubscriptionApplication(object):
-    implements(IObserver)
 
     def __init__(self, account_name, trace_sip, trace_pjsip, trace_notifications):
         self.account_name = account_name
@@ -122,7 +122,7 @@ class SubscriptionApplication(object):
         SIPApplication.storage = FileStorage(config_directory)
         try:
             configuration.start()
-        except ConfigurationError, e:
+        except ConfigurationError as e:
             raise RuntimeError("Failed to load sipclient's configuration: %s\nIf an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script." % str(e))
         account_manager.load()
         if self.account_name is None:
@@ -285,7 +285,7 @@ class SubscriptionApplication(object):
         if notification.data.content_type == XCAPDiffDocument.content_type:
             try:
                 xcap_diff = XCAPDiffDocument.parse(notification.data.body)
-            except ParserError, e:
+            except ParserError as e:
                 self.output.put("xcap-diff document is invalid: %s" % str(e))
             else:
                 self._display_xcapdiff(xcap_diff)
@@ -401,11 +401,11 @@ if __name__ == "__main__":
     try:
         application = SubscriptionApplication(options.account_name, options.trace_sip, options.trace_pjsip, options.trace_notifications)
         return_code = application.run()
-    except RuntimeError, e:
-        print "Error: %s" % str(e)
+    except RuntimeError as e:
+        print("Error: %s" % str(e))
         sys.exit(1)
-    except SIPCoreError, e:
-        print "Error: %s" % str(e)
+    except SIPCoreError as e:
+        print("Error: %s" % str(e))
         sys.exit(1)
     else:
         sys.exit(return_code)

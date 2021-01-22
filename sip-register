@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import atexit
 import os
@@ -67,7 +67,7 @@ class InputThread(Thread):
             self._old_terminal_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
             new[3] = new[3] & ~termios.ICANON & ~termios.ECHO
-            new[6][termios.VMIN] = '\000'
+            new[6][termios.VMIN] = b'\000'
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, new)
                 if select.select([fd], [], [], None)[0]:
@@ -92,8 +92,6 @@ class RegistrationApplication(SIPApplication):
         self.success = False
 
     def _write(self, message):
-        if isinstance(message, unicode):
-            message = message.encode(sys.getfilesystemencoding())
         sys.stdout.write(message)
         sys.stdout.flush()
 
@@ -123,7 +121,7 @@ class RegistrationApplication(SIPApplication):
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         try:
             SIPApplication.start(self, FileStorage(options.config_directory or config_directory))
-        except ConfigurationError, e:
+        except ConfigurationError as e:
             self.output.put("Failed to load sipclient's configuration: %s\n" % str(e))
             self.output.put("If an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script.\n")
             self.output.stop()
@@ -225,12 +223,12 @@ class RegistrationApplication(SIPApplication):
             
         result_text = ''
         i = 1
-        for t in targets.keys():
+        for t in list(targets.keys()):
             result_text = result_text  + ' ' + str(i) + ') ' + t + ': '
             result_text = result_text + ' '.join(sorted(list(targets[t])))
             i = i + 1
             
-        self.output.put(u"\n%s DNS lookup for %s succeeded:%s\n" % (datetime.now().replace(microsecond=0), self.account.id.domain, result_text))
+        self.output.put("\n%s DNS lookup for %s succeeded:%s\n" % (datetime.now().replace(microsecond=0), self.account.id.domain, result_text))
 
     def _NH_SIPApplicationGotInput(self, notification):
         engine = Engine()

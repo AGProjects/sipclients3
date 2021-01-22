@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import hashlib
 import os
@@ -21,7 +21,7 @@ from application.python.queue import EventQueue
 from eventlib.twistedutil import join_reactor
 from twisted.internet import reactor
 from twisted.internet.error import ReactorNotRunning
-from zope.interface import implements
+from zope.interface import implementer
 
 from sipsimple.core import Engine, FromHeader, Publication, PublicationError, RouteHeader, SIPCoreError, SIPURI
 from sipsimple.account import Account, AccountManager, BonjourAccount
@@ -59,7 +59,7 @@ class Menu(object):
 
     def print_prompt(self):
         buf = ['Commands:']
-        for key, binding in self.key_bindings.items():
+        for key, binding in list(self.key_bindings.items()):
             buf.append('  %s: %s' % (key, binding.description))
         self.interface.application.output.put('\n'+'\n'.join(buf)+'\n')
 
@@ -101,7 +101,7 @@ class MoodMenu(Menu):
         m = self.interface.getstring('Select mood to add (any non-number will return)')
         try:
             m = int(m)
-            if m not in xrange(len(values)):
+            if m not in range(len(values)):
                 raise ValueError
         except ValueError:
             self.interface.application.output.put('Invalid input')
@@ -163,7 +163,7 @@ class MoodMenu(Menu):
     def _set_note(self):
         person = self.interface.application.person
         if person.mood is not None and person.mood.notes:
-            a_note = iter(person.mood.notes).next()
+            a_note = next(iter(person.mood.notes))
             self.interface.application.output.put('Current note: %s' % a_note)
         note = self.interface.getstring('Set note (press return to delete)')
         if note == '':
@@ -235,7 +235,7 @@ class ActivitiesMenu(Menu):
         a = self.interface.getstring('Select activity to add (any non-number will return)')
         try:
             a = int(a)
-            if a-1 not in xrange(len(values)):
+            if a-1 not in range(len(values)):
                 raise ValueError
         except ValueError:
             self.interface.application.output.put('Invalid input')
@@ -276,7 +276,7 @@ class ActivitiesMenu(Menu):
     def _set_note(self):
         person = self.interface.application.person
         if person.activities is not None and person.activities.notes:
-            a_note = iter(person.activities.notes).next()
+            a_note = next(iter(person.activities.notes))
             self.interface.application.output.put('Current note: %s' % a_note)
         note = self.interface.getstring('Set note (press return to delete)')
         if note == '':
@@ -346,7 +346,7 @@ class ExtendedStatusMenu(Menu):
         a = self.interface.getstring('Select status (any non-number will return)')
         try:
             a = int(a)
-            if a-1 not in xrange(len(values)):
+            if a-1 not in range(len(values)):
                 raise ValueError
         except ValueError:
             self.interface.application.output.put('Invalid input')
@@ -378,8 +378,8 @@ class TopLevelMenu(Menu):
     def _show_pidf(self):
         try:
             pidf = self.interface.application.pidf.toxml(pretty_print=True)
-        except BuilderError, e:
-            print "PIDF as currently defined is invalid: %s" % str(e)
+        except BuilderError as e:
+            print("PIDF as currently defined is invalid: %s" % str(e))
         except:
             traceback.print_exc()
         else:
@@ -412,7 +412,7 @@ class TopLevelMenu(Menu):
     def _set_note(self):
         service = self.interface.application.service
         if service.notes:
-            a_note = iter(service.notes).next()
+            a_note = next(iter(service.notes))
             self.interface.application.output.put('Current note: %s' % a_note)
         note = self.interface.getstring('Set note (press return to delete)')
         if note == '':
@@ -488,7 +488,7 @@ class UserInterface(Thread):
             self._old_terminal_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
             new[3] = new[3] & ~termios.ICANON & ~termios.ECHO
-            new[6][termios.VMIN] = '\000'
+            new[6][termios.VMIN] = b'\000'
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, new)
                 if select.select([fd], [], [], None)[0]:
@@ -499,8 +499,8 @@ class UserInterface(Thread):
             return os.read(fd, 4192)
 
 
+@implementer(IObserver)
 class PublicationApplication(object):
-    implements(IObserver)
 
     def __init__(self, account_name, trace_sip, trace_pjsip, trace_notifications):
         self.account_name = account_name
@@ -549,7 +549,7 @@ class PublicationApplication(object):
         SIPApplication.storage = FileStorage(config_directory)
         try:
             configuration.start()
-        except ConfigurationError, e:
+        except ConfigurationError as e:
             raise RuntimeError("Failed to load sipclient's configuration: %s\nIf an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script." % str(e))
         account_manager.load()
         if self.account_name is None:
@@ -610,12 +610,12 @@ class PublicationApplication(object):
         self.service.timestamp = ServiceTimestamp(datetime.now())
         self.pidf.add(self.service)
 
-        self.person = Person("ID-"+hashlib.md5(self.account.id).hexdigest())
+        self.person = Person("ID-"+hashlib.md5(self.account.id.encode()).hexdigest())
         self.person.time_offset = TimeOffset()
         self.person.timestamp = PersonTimestamp(datetime.now())
         self.pidf.add(self.person)
 
-        self.device = Device(''.join(chr(random.randint(97, 122)) for i in xrange(8)))
+        self.device = Device(''.join(chr(random.randint(97, 122)) for i in range(8)))
         self.device.device_id = device_id
         self.device.notes.add(DMNote('Powered by %s' % settings.user_agent, lang='en'))
         self.device.timestamp = DeviceTimestamp(datetime.now())
@@ -798,7 +798,7 @@ class PublicationApplication(object):
         try:
             route_header = RouteHeader(route.uri)
             self.publication.publish(self.pidf.toxml(), route_header, timeout=5)
-        except BuilderError, e:
+        except BuilderError as e:
             self.output.put("PIDF as currently defined is invalid: %s" % str(e))
             self.publishing = False
         except:
@@ -827,11 +827,11 @@ if __name__ == "__main__":
     try:
         application = PublicationApplication(options.account_name, options.trace_sip, options.trace_pjsip, options.trace_notifications)
         return_code = application.run()
-    except RuntimeError, e:
-        print "Error: %s" % str(e)
+    except RuntimeError as e:
+        print("Error: %s" % str(e))
         sys.exit(1)
-    except SIPCoreError, e:
-        print "Error: %s" % str(e)
+    except SIPCoreError as e:
+        print("Error: %s" % str(e))
         sys.exit(1)
     else:
         sys.exit(return_code)

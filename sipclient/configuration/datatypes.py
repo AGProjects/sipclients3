@@ -5,7 +5,7 @@ __all__ = ['ResourcePath', 'UserDataPath', 'SoundFile', 'AccountSoundFile']
 
 import os
 import sys
-import urlparse
+import urllib.parse
 
 from application.python.descriptor import classproperty, WriteOnceAttribute
 from sipsimple.configuration.datatypes import Hostname
@@ -14,12 +14,12 @@ from sipsimple.configuration.datatypes import Hostname
 
 class ResourcePath(object):
     def __init__(self, path):
-        if not isinstance(path, unicode):
+        if not isinstance(path, str):
             path = path.decode(sys.getfilesystemencoding())
         self.path = os.path.normpath(path)
 
     def __getstate__(self):
-        return unicode(self.path)
+        return str(self.path)
 
     def __setstate__(self, state):
         self.__init__(state)
@@ -59,17 +59,17 @@ class ResourcePath(object):
         return '%s(%r)' % (self.__class__.__name__, self.path)
 
     def __unicode__(self):
-        return unicode(self.path)
+        return str(self.path)
 
 
 class UserDataPath(object):
     def __init__(self, path):
-        if not isinstance(path, unicode):
+        if not isinstance(path, str):
             path = path.decode(sys.getfilesystemencoding())
         self.path = os.path.normpath(path)
 
     def __getstate__(self):
-        return unicode(self.path)
+        return str(self.path)
 
     def __setstate__(self, state):
         self.__init__(state)
@@ -96,7 +96,7 @@ class UserDataPath(object):
         return '%s(%r)' % (self.__class__.__name__, self.path)
 
     def __unicode__(self):
-        return unicode(self.path)
+        return str(self.path)
 
 
 class SoundFile(object):
@@ -107,11 +107,11 @@ class SoundFile(object):
             raise ValueError("illegal volume level: %d" % self.volume)
 
     def __getstate__(self):
-        return u'%s,%s' % (self.path.__getstate__(), self.volume)
+        return '%s,%s' % (self.path.__getstate__(), self.volume)
 
     def __setstate__(self, state):
         try:
-            path, volume = state.rsplit(u',', 1)
+            path, volume = state.rsplit(',', 1)
         except ValueError:
             self.__init__(state)
         else:
@@ -121,7 +121,7 @@ class SoundFile(object):
         return '%s(%r, %r)' % (self.__class__.__name__, self.path, self.volume)
 
     def __unicode__(self):
-        return u'%s,%d' % (self.path, self.volume)
+        return '%s,%d' % (self.path, self.volume)
 
 
 class AccountSoundFile(object):
@@ -142,15 +142,15 @@ class AccountSoundFile(object):
 
     def __getstate__(self):
         if isinstance(self._sound_file, self.DefaultSoundFile):
-            return u'default:%s' % self._sound_file.setting
+            return 'default:%s' % self._sound_file.setting
         else:
-            return u'file:%s' % self._sound_file.__getstate__()
+            return 'file:%s' % self._sound_file.__getstate__()
 
     def __setstate__(self, state):
-        type, value = state.split(u':', 1)
-        if type == u'default':
+        type, value = state.split(':', 1)
+        if type == 'default':
             self._sound_file = self.DefaultSoundFile(value)
-        elif type == u'file':
+        elif type == 'file':
             self._sound_file = SoundFile.__new__(SoundFile)
             self._sound_file.__setstate__(value)
 
@@ -173,17 +173,17 @@ class AccountSoundFile(object):
 
     def __unicode__(self):
         if isinstance(self._sound_file, self.DefaultSoundFile):
-            return u'DEFAULT'
+            return 'DEFAULT'
         else:
-            return u'%s,%d' % (self._sound_file.path, self._sound_file.volume)
+            return '%s,%d' % (self._sound_file.path, self._sound_file.volume)
 
 
 class HTTPURL(object):
     url = WriteOnceAttribute()
 
     def __init__(self, value):
-        url = urlparse.urlparse(value)
-        if url.scheme not in (u'http', u'https'):
+        url = urllib.parse.urlparse(value)
+        if url.scheme not in ('http', 'https'):
             raise ValueError(NSLocalizedString("Illegal HTTP URL scheme (http and https only): %s", "Preference option error") % url.scheme)
         # check port and hostname
         Hostname(url.hostname)
@@ -193,7 +193,7 @@ class HTTPURL(object):
         self.url = url
 
     def __getstate__(self):
-        return unicode(self.url.geturl())
+        return str(self.url.geturl())
 
     def __setstate__(self, state):
         self.__init__(state)
@@ -208,5 +208,5 @@ class HTTPURL(object):
             raise AttributeError("'%s' object has no attribute '%s'" % (self.__class__.__name__, attr))
 
     def __unicode__(self):
-        return unicode(self.url.geturl())
+        return str(self.url.geturl())
 

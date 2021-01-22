@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import atexit
 import os
@@ -52,7 +52,7 @@ class InputThread(Thread):
             lines = []
             try:
                 while True:
-                    lines.append(raw_input())
+                    lines.append(input())
             except EOFError:
                 message = '\n'.join(lines)
                 notification_center.post_notification('SIPApplicationGotInputMessage', sender=self, data=NotificationData(message=message))
@@ -80,7 +80,7 @@ class InputThread(Thread):
             self._old_terminal_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
             new[3] = new[3] & ~termios.ICANON & ~termios.ECHO
-            new[6][termios.VMIN] = '\000'
+            new[6][termios.VMIN] = b'\000'
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, new)
                 if select.select([fd], [], [], None)[0]:
@@ -106,8 +106,9 @@ class SIPMessageApplication(SIPApplication):
         self.logger = None
 
     def _write(self, message):
-        if isinstance(message, unicode):
-            message = message.encode(sys.getfilesystemencoding())
+        print('message %s %s' % (message, type(message)))
+        #if isinstance(message, str):
+        #    message = message.encode(sys.getfilesystemencoding())
         sys.stdout.write(message)
         sys.stdout.flush()
 
@@ -136,7 +137,7 @@ class SIPMessageApplication(SIPApplication):
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         try:
             SIPApplication.start(self, FileStorage(options.config_directory or config_directory))
-        except ConfigurationError, e:
+        except ConfigurationError as e:
             self.output.put("Failed to load sipclient's configuration: %s\n" % str(e))
             self.output.put("If an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script.\n")
             self.output.stop()

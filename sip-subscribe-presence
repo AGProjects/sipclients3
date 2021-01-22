@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import datetime
 import os
@@ -6,7 +6,7 @@ import random
 import select
 import sys
 import termios
-import urllib
+import urllib.request, urllib.parse, urllib.error
 
 from collections import deque
 from optparse import OptionParser
@@ -19,7 +19,7 @@ from application.python.queue import EventQueue
 from eventlib.twistedutil import join_reactor
 from twisted.internet import reactor
 from twisted.internet.error import ReactorNotRunning
-from zope.interface import implements
+from zope.interface import implementer
 
 from sipsimple.account import Account, AccountManager, BonjourAccount
 from sipsimple.application import SIPApplication
@@ -69,7 +69,7 @@ class InputThread(Thread):
             self._old_terminal_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
             new[3] = new[3] & ~termios.ICANON & ~termios.ECHO
-            new[6][termios.VMIN] = '\000'
+            new[6][termios.VMIN] = b'\000'
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, new)
                 if select.select([fd], [], [], None)[0]:
@@ -80,8 +80,8 @@ class InputThread(Thread):
             return os.read(fd, 4192)
 
 
+@implementer(IObserver)
 class SubscriptionApplication(object):
-    implements(IObserver)
 
     def __init__(self, account_name, target, trace_sip, trace_pjsip, trace_notifications):
         self.account_name = account_name
@@ -108,9 +108,9 @@ class SubscriptionApplication(object):
         log.level.current = log.level.WARNING
 
     def _write(self, message):
-        if isinstance(message, unicode):
+        if isinstance(message, str):
             message = message.encode(sys.getfilesystemencoding())
-        sys.stdout.write(message+'\n')
+        sys.stdout.write(message.decode()+'\n')
 
     def run(self):
         account_manager = AccountManager()
@@ -127,7 +127,7 @@ class SubscriptionApplication(object):
         SIPApplication.storage = FileStorage(config_directory)
         try:
             configuration.start()
-        except ConfigurationError, e:
+        except ConfigurationError as e:
             raise RuntimeError("failed to load sipclient's configuration: %s\nIf an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script." % str(e))
         account_manager.load()
         if self.account_name is None:
@@ -289,7 +289,7 @@ class SubscriptionApplication(object):
             self.output.put('Received NOTIFY:')
             try:
                 pidf = PIDF.parse(notification.data.body)
-            except ParserError, e:
+            except ParserError as e:
                 self.output.put('Got illegal PIDF document: %s\n%s' % (str(e), notification.data.body))
             else:
                 self._display_pidf(pidf)
@@ -499,10 +499,10 @@ class SubscriptionApplication(object):
                 buf.append("    Extended status: %s" % service.status.extended)
         # display contact
         if service.contact is not None:
-            buf.append("    Contact%s: %s" % ((service.contact.priority is not None) and (' priority %s' % service.contact.priority) or '', urllib.unquote(service.contact.value)))
+            buf.append("    Contact%s: %s" % ((service.contact.priority is not None) and (' priority %s' % service.contact.priority) or '', urllib.parse.unquote(service.contact.value)))
         # display device ID
         if service.device_info is not None:
-            description = " (%s)" % urllib.unquote(service.device_info.description.value).decode('utf-8') if service.device_info.description else ""
+            description = " (%s)" % urllib.parse.unquote(service.device_info.description.value).decode('utf-8') if service.device_info.description else ""
             buf.append("    Service offered by device: %s%s" % (service.device_info.id, description))
         # display relationship
         if service.relationship is not None:
@@ -547,7 +547,7 @@ class SubscriptionApplication(object):
 
     def _display_pidf(self, pidf):
         buf = ["-"*16]
-        buf.append("Presence for %s:" % urllib.unquote(pidf.entity))
+        buf.append("Presence for %s:" % urllib.parse.unquote(pidf.entity))
         persons = {}
         devices = {}
         services = {}
@@ -568,7 +568,7 @@ class SubscriptionApplication(object):
                     buf.append("    %s" % self._format_note(note))
                 printed_sep = False
         else:
-            for person in persons.values():
+            for person in list(persons.values()):
                 buf.append("  Person: %s" % person.id)
                 buf.extend(self._format_person(person, pidf))
             printed_sep = False
@@ -578,7 +578,7 @@ class SubscriptionApplication(object):
         if len(services) > 0:
             if not printed_sep:
                 buf.append("  " + "-"*3)
-            for service in services.values():
+            for service in list(services.values()):
                 buf.append("  Service: %s" % service.id)
                 buf.extend(self._format_service(service, pidf))
 
@@ -586,7 +586,7 @@ class SubscriptionApplication(object):
         if len(devices) > 0:
             if not printed_sep:
                 buf.append("  " + "-"*3)
-            for device in devices.values():
+            for device in list(devices.values()):
                 buf.append("  Device: %s" % device.id)
                 buf.extend(self._format_device(device, pidf))
 
@@ -610,11 +610,11 @@ if __name__ == "__main__":
     try:
         application = SubscriptionApplication(options.account_name, args[0] if args else None, options.trace_sip, options.trace_pjsip, options.trace_notifications)
         return_code = application.run()
-    except RuntimeError, e:
-        print "Error: %s" % str(e)
+    except RuntimeError as e:
+        print("Error: %s" % str(e))
         sys.exit(1)
-    except SIPCoreError, e:
-        print "Error: %s" % str(e)
+    except SIPCoreError as e:
+        print("Error: %s" % str(e))
         sys.exit(1)
     else:
         sys.exit(return_code)

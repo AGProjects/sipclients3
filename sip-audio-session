@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import atexit
 import os
@@ -84,7 +84,7 @@ class InputThread(Thread):
             self._old_terminal_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
             new[3] = new[3] & ~termios.ICANON & ~termios.ECHO
-            new[6][termios.VMIN] = '\000'
+            new[6][termios.VMIN] = b'\000'
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, new)
                 if select.select([fd], [], [], None)[0]:
@@ -188,8 +188,6 @@ class SIPAudioApplication(SIPApplication):
         self.session_spool_dir = None
 
     def _write(self, message):
-        if isinstance(message, unicode):
-            message = message.encode(sys.getfilesystemencoding())
         sys.stdout.write(message)
         sys.stdout.flush()
 
@@ -229,7 +227,7 @@ class SIPAudioApplication(SIPApplication):
         try:
             self.output.put("Using config directory: %s\n" % self.config_directory)
             SIPApplication.start(self, FileStorage(self.config_directory))
-        except ConfigurationError, e:
+        except ConfigurationError as e:
             self.output.put("Failed to load sipclient's configuration: %s\n" % str(e))
             self.output.put("If an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script.\n")
             self.output.stop()
@@ -457,7 +455,7 @@ class SIPAudioApplication(SIPApplication):
             self.voice_audio_mixer.muted = not self.voice_audio_mixer.muted
             self.output.put('The microphone is now %s\n' % ('muted' if self.voice_audio_mixer.muted else 'unmuted'))
         elif notification.data.input == 'i':
-            input_devices = [None, u'system_default'] + sorted(engine.input_devices)
+            input_devices = [None, 'system_default'] + sorted(engine.input_devices)
             if self.voice_audio_mixer.input_device in input_devices:
                 old_input_device = self.voice_audio_mixer.input_device
             else:
@@ -466,15 +464,15 @@ class SIPAudioApplication(SIPApplication):
             new_input_device = input_devices[(input_devices.index(old_input_device)+1) % len(input_devices)]
             try:
                 self.voice_audio_mixer.set_sound_devices(new_input_device, self.voice_audio_mixer.output_device, tail_length)
-            except SIPCoreError, e:
+            except SIPCoreError as e:
                 self.output.put('Failed to set input device to %s: %s\n' % (new_input_device, str(e)))
             else:
-                if new_input_device == u'system_default':
+                if new_input_device == 'system_default':
                     self.output.put('Audio input device changed to %s (system default device)\n' % self.voice_audio_mixer.real_input_device)
                 else:
                     self.output.put('Audio input device changed to %s\n' % new_input_device)
         elif notification.data.input == 'o':
-            output_devices = [None, u'system_default'] + sorted(engine.output_devices)
+            output_devices = [None, 'system_default'] + sorted(engine.output_devices)
             if self.voice_audio_mixer.output_device in output_devices:
                 old_output_device = self.voice_audio_mixer.output_device
             else:
@@ -483,15 +481,15 @@ class SIPAudioApplication(SIPApplication):
             new_output_device = output_devices[(output_devices.index(old_output_device)+1) % len(output_devices)]
             try:
                 self.voice_audio_mixer.set_sound_devices(self.voice_audio_mixer.input_device, new_output_device, tail_length)
-            except SIPCoreError, e:
+            except SIPCoreError as e:
                 self.output.put('Failed to set output device to %s: %s\n' % (new_output_device, str(e)))
             else:
-                if new_output_device == u'system_default':
+                if new_output_device == 'system_default':
                     self.output.put('Audio output device changed to %s (system default device)\n' % self.voice_audio_mixer.real_output_device)
                 else:
                     self.output.put('Audio output device changed to %s\n' % new_output_device)
         elif notification.data.input == 'a':
-            output_devices = [None, u'system_default'] + sorted(engine.output_devices)
+            output_devices = [None, 'system_default'] + sorted(engine.output_devices)
             if self.alert_audio_mixer.output_device in output_devices:
                 old_output_device = self.alert_audio_mixer.output_device
             else:
@@ -500,10 +498,10 @@ class SIPAudioApplication(SIPApplication):
             new_output_device = output_devices[(output_devices.index(old_output_device)+1) % len(output_devices)]
             try:
                 self.alert_audio_mixer.set_sound_devices(self.alert_audio_mixer.input_device, new_output_device, tail_length)
-            except SIPCoreError, e:
+            except SIPCoreError as e:
                 self.output.put('Failed to set alert device to %s: %s\n' % (new_output_device, str(e)))
             else:
-                if new_output_device == u'system_default':
+                if new_output_device == 'system_default':
                     self.output.put('Audio alert device changed to %s (system default device)\n' % self.alert_audio_mixer.real_output_device)
                 else:
                     self.output.put('Audio alert device changed to %s\n' % new_output_device)
@@ -669,7 +667,7 @@ class SIPAudioApplication(SIPApplication):
         notification_center = NotificationCenter()
         
         result_text = ', '.join(('%s:%s (%s)' % (result.address, result.port, result.transport.upper()) for result in notification.data.result))
-        self.output.put(u"\nDNS lookup for %s succeeded: %s\n" % (self.target.host, result_text))
+        self.output.put("\nDNS lookup for %s succeeded: %s\n" % (self.target.host, result_text))
 
         if self.end_session_if_needed():
             self.stop()

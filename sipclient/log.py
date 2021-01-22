@@ -13,13 +13,13 @@ from application import log
 from application.notification import IObserver, NotificationCenter
 from application.python.queue import EventQueue
 from application.system import makedirs
-from zope.interface import implements
+from zope.interface import implementer
 
 from sipsimple.configuration.settings import SIPSimpleSettings
 
 
+@implementer(IObserver)
 class Logger(object):
-    implements(IObserver)
 
     # public methods
     #
@@ -113,7 +113,7 @@ class Logger(object):
             if notification.data is not None:
                 message += '\n%s' % pformat(notification.data.__dict__)
             if self.notifications_to_stdout:
-                print '%s: %s' % (datetime.datetime.now(), message)
+                print(('%s: %s' % (datetime.datetime.now(), message)))
             if settings.logs.trace_notifications:
                 try:
                     self._init_log_file('notifications')
@@ -168,7 +168,7 @@ class Logger(object):
         buf.append('--')
         message = '\n'.join(buf)
         if self.sip_to_stdout:
-            print '%s: %s\n' % (notification.datetime, message)
+            print(('%s: %s\n' % (notification.datetime, message)))
         if settings.logs.trace_sip:
             try:
                 self._init_log_file('siptrace')
@@ -184,7 +184,7 @@ class Logger(object):
             return
         message = "(%(level)d) %(message)s" % notification.data.__dict__
         if self.pjsip_to_stdout:
-            print message
+            print(message)
         if settings.logs.trace_pjsip:
             try:
                 self._init_log_file('pjsiptrace')
@@ -215,7 +215,7 @@ class Logger(object):
                            dns.resolver.Timeout: 'no DNS response received, the query has timed out'}
             message += ' failed: %s' % message_map.get(notification.data.error.__class__, '')
         if self.sip_to_stdout:
-            print '%s: %s' % (notification.datetime, message)
+            print(('%s: %s' % (notification.datetime, message)))
         if settings.logs.trace_sip:
             try:
                 self._init_log_file('siptrace')
@@ -238,7 +238,7 @@ class Logger(object):
         remote_address = '%s:%d' % (remote_address.host, remote_address.port)
         message = '%s %s %s\n' % (local_address, arrow, remote_address) + notification.data.data
         if self.msrp_to_stdout:
-            print '%s: %s' % (notification.datetime, message)
+            print(('%s: %s' % (notification.datetime, message)))
         if settings.logs.trace_msrp:
             try:
                 self._init_log_file('msrptrace')
@@ -256,7 +256,7 @@ class Logger(object):
             return
         message = '%s%s' % (notification.data.level.prefix, notification.data.message)
         if self.msrp_to_stdout:
-            print '%s: %s' % (notification.datetime, message)
+            print(('%s: %s' % (notification.datetime, message)))
         if settings.logs.trace_msrp:
             try:
                 self._init_log_file('msrptrace')
@@ -274,9 +274,9 @@ class Logger(object):
         log_directory = settings.logs.directory.normalized
         try:
             makedirs(log_directory)
-        except Exception, e:
+        except Exception as e:
             if not self._log_directory_error:
-                print "failed to create logs directory '%s': %s" % (log_directory, e)
+                print(("failed to create logs directory '%s': %s" % (log_directory, e)))
                 self._log_directory_error = True
             self._siptrace_error = True
             self._pjsiptrace_error = True
@@ -310,9 +310,9 @@ class Logger(object):
             filename = getattr(self, '_%s_filename' % type)
             try:
                 setattr(self, '_%s_file' % type, open(filename, 'a'))
-            except Exception, e:
+            except Exception as e:
                 if not getattr(self, '_%s_error' % type):
-                    print "failed to create log file '%s': %s" % (filename, e)
+                    print(("failed to create log file '%s': %s" % (filename, e)))
                     setattr(self, '_%s_error' % type, True)
                 raise
             else:

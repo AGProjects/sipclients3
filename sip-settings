@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import fcntl
 import re
@@ -26,10 +26,7 @@ def format_child(obj, attrname, maxchars):
     linebuf = attrname
     if isinstance(getattr(type(obj), attrname, None), Setting):
         attr = getattr(obj, attrname)
-        if isinstance(attr, unicode):
-            string = attr.encode(sys.getfilesystemencoding())
-        else:
-            string = str(attr)
+        string = str(attr)
         if maxchars is not None:
             maxchars -= len(attrname)+4
             if len(string) > maxchars:
@@ -50,23 +47,23 @@ def display_object(obj, name):
     linebuf = ' '*(len(name)+3) + '+'
     if children:
         linebuf += '-- ' + format_child(obj, children.popleft(), width-(len(name)+7) if width is not None else None)
-    print linebuf
+    print(linebuf)
     # display second line
     linebuf = name + ' --|'
     if children:
         linebuf += '-- ' + format_child(obj, children.popleft(), width-(len(name)+7) if width is not None else None)
-    print linebuf
+    print(linebuf)
     # display the rest of the lines
     if children:
         while children:
             child = children.popleft()
             linebuf = ' '*(len(name)+3) + ('|' if children else '+') + '-- ' + format_child(obj, child, width-(len(name)+7) if width is not None else None)
-            print linebuf
+            print(linebuf)
     else:
         linebuf = ' '*(len(name)+3) + '+'
-        print linebuf
+        print(linebuf)
 
-    print
+    print()
 
     [display_object(getattr(obj, child), child) for child in dir(type(obj)) if isinstance(getattr(type(obj), child, None), SettingsGroupMeta)]
 
@@ -82,10 +79,6 @@ class SettingsParser(object):
                 return True
             else:
                 return False
-        elif issubclass(type, unicode):
-            if isinstance(value, str):
-                return value.decode(sys.getfilesystemencoding())
-            return value
         else:
             return value
 
@@ -150,53 +143,53 @@ class AccountConfigurator(object):
         self.account_manager.load()
 
     def list(self):
-        print 'Accounts:'
+        print('Accounts:')
         bonjour_account = BonjourAccount()
         accounts = [account for account in self.account_manager.get_accounts() if account.id != bonjour_account.id]
-        accounts.sort(cmp=lambda a, b: cmp(a.id, b.id))
+        accounts.sort(key=lambda x: x.id)
         accounts.append(bonjour_account)
         for account in accounts:
-            print '  %s (%s)%s' % (account.id, 'enabled' if account.enabled else 'disabled', ' - default_account' if account is self.account_manager.default_account else '')
+            print('  %s (%s)%s' % (account.id, 'enabled' if account.enabled else 'disabled', ' - default_account' if account is self.account_manager.default_account else ''))
 
     def add(self, sip_address, password):
         if self.account_manager.has_account(sip_address):
-            print 'Account %s already exists' % sip_address
+            print('Account %s already exists' % sip_address)
             return
         try:
             account = Account(sip_address)
-        except ValueError, e:
-            print 'Cannot add SIP account: %s' % str(e)
+        except ValueError as e:
+            print('Cannot add SIP account: %s' % str(e))
             return
         account.auth.password = password
         account.enabled = True
         account.save()
-        print 'Account added'
+        print('Account added')
 
     def delete(self, sip_address):
         if sip_address != 'ALL':
             possible_accounts = [account for account in self.account_manager.iter_accounts() if sip_address in account.id]
             if len(possible_accounts) > 1:
-                print "More than one account exists which matches %s: %s" % (sip_address, ", ".join(sorted(account.id for account in possible_accounts)))
+                print("More than one account exists which matches %s: %s" % (sip_address, ", ".join(sorted(account.id for account in possible_accounts))))
                 return
             if len(possible_accounts) == 0:
-                print 'Account %s does not exist' % sip_address
+                print('Account %s does not exist' % sip_address)
                 return
             account = possible_accounts[0]
             if account == BonjourAccount():
-                print 'Cannot delete bonjour account'
+                print('Cannot delete bonjour account')
                 return
             account.delete()
-            print 'Account deleted'
+            print('Account deleted')
         else:
             for account in self.account_manager.get_accounts():
                 account.delete()
-            print 'Accounts deleted'
+            print('Accounts deleted')
 
     def show(self, sip_address=None):
         if sip_address is None:
             accounts = [self.account_manager.default_account]
             if accounts[0] is None:
-                print "No accounts configured"
+                print("No accounts configured")
                 return
         else:
             if sip_address != 'ALL':
@@ -204,10 +197,10 @@ class AccountConfigurator(object):
             else:
                 accounts = self.account_manager.get_accounts()
             if not accounts:
-                print 'No accounts which match %s' % sip_address
+                print('No accounts which match %s' % sip_address)
                 return
         for account in accounts:
-            print 'Account %s:' % account.id
+            print('Account %s:' % account.id)
             display_object(account, 'account')
 
     def set(self, *args):
@@ -216,7 +209,7 @@ class AccountConfigurator(object):
         if '=' in args[0]:
             accounts = [self.account_manager.default_account]
             if accounts[0] is None:
-                print "No accounts configured"
+                print("No accounts configured")
                 return
         else:
             sip_address = args[0]
@@ -226,25 +219,26 @@ class AccountConfigurator(object):
             else:
                 accounts = self.account_manager.get_accounts()
             if not accounts:
-                print 'No accounts which match %s' % sip_address
+                print('No accounts which match %s' % sip_address)
                 return
 
         try:
             settings = dict(arg.split('=', 1) for arg in args)
         except ValueError:
-            print 'Illegal arguments: %s' % ' '.join(args)
+            print('Illegal arguments: %s' % ' '.join(args))
             return
 
         for account in accounts:
-            for attrname, value in settings.iteritems():
+            for attrname, value in settings.items():
                 object = account
                 name = attrname
                 while '.' in name:
                     local_name, name = name.split('.', 1)
+                    print(dir(account))
                     try:
                         object = getattr(object, local_name)
                     except AttributeError:
-                        print 'Unknown setting: %s' % attrname
+                        print('Unknown setting: %s' % attrname)
                         object = None
                         break
                 if object is not None:
@@ -253,28 +247,28 @@ class AccountConfigurator(object):
                         value = SettingsParser.parse(attribute.type, value)
                         setattr(object, name, value)
                     except AttributeError:
-                        print 'Unknown setting: %s' % attrname
-                    except ValueError, e:
-                        print '%s: %s' % (attrname, str(e))
+                        print('Unknown setting: %s' % attrname)
+                    except ValueError as e:
+                        print('%s: %s' % (attrname, str(e)))
 
             account.save()
-        print 'Account%s updated' % ('s' if len(accounts) > 1 else '')
+        print('Account%s updated' % ('s' if len(accounts) > 1 else ''))
 
     def default(self, sip_address):
         possible_accounts = [account for account in self.account_manager.iter_accounts() if sip_address in account.id]
         if len(possible_accounts) > 1:
-            print "More than one account exists which matches %s: %s" % (sip_address, ", ".join(sorted(account.id for account in possible_accounts)))
+            print("More than one account exists which matches %s: %s" % (sip_address, ", ".join(sorted(account.id for account in possible_accounts))))
             return
         if len(possible_accounts) == 0:
-            print 'Account %s does not exist' % sip_address
+            print('Account %s does not exist' % sip_address)
             return
         account = possible_accounts[0]
         try:
             self.account_manager.default_account = account
-        except ValueError, e:
-            print str(e)
+        except ValueError as e:
+            print(str(e))
             return
-        print 'Account %s is now default account' % account.id
+        print('Account %s is now default account' % account.id)
 
 
 class SIPSimpleConfigurator(object):
@@ -285,7 +279,7 @@ class SIPSimpleConfigurator(object):
         SIPSimpleSettings()
 
     def show(self):
-        print 'SIP SIMPLE settings:'
+        print('SIP SIMPLE settings:')
         display_object(SIPSimpleSettings(), 'SIP SIMPLE')
 
     def set(self, *args):
@@ -293,10 +287,10 @@ class SIPSimpleConfigurator(object):
         try:
             settings = dict(arg.split('=', 1) for arg in args)
         except ValueError:
-            print 'Illegal arguments: %s' % ' '.join(args)
+            print('Illegal arguments: %s' % ' '.join(args))
             return
 
-        for attrname, value in settings.iteritems():
+        for attrname, value in settings.items():
             object = sipsimple_settings
             name = attrname
             while '.' in name:
@@ -304,7 +298,7 @@ class SIPSimpleConfigurator(object):
                 try:
                     object = getattr(object, local_name)
                 except AttributeError:
-                    print 'Unknown setting: %s' % attrname
+                    print('Unknown setting: %s' % attrname)
                     object = None
                     break
             if object is not None:
@@ -313,12 +307,12 @@ class SIPSimpleConfigurator(object):
                     value = SettingsParser.parse(attribute.type, value)
                     setattr(object, name, value)
                 except AttributeError:
-                    print 'Unknown setting: %s' % attrname
-                except ValueError, e:
-                    print '%s: %s' % (attrname, str(e))
+                    print('Unknown setting: %s' % attrname)
+                except ValueError as e:
+                    print('%s: %s' % (attrname, str(e)))
 
         sipsimple_settings.save()
-        print 'SIP SIMPLE general settings updated'
+        print('SIP SIMPLE general settings updated')
 
 
 if __name__ == '__main__':
@@ -359,7 +353,7 @@ if __name__ == '__main__':
             object = AccountConfigurator()
         else:
             object = SIPSimpleConfigurator()
-    except ConfigurationError, e:
+    except ConfigurationError as e:
         sys.stderr.write("Failed to load sipclient's configuration: %s\n" % str(e))
         sys.stderr.write("If an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script.\n")
     else:

@@ -8,7 +8,7 @@ an actual implementation.
 __all__ = ["RichText", "CompoundRichText", "Prompt", "Question", "UI"]
 
 import atexit
-import cPickle as pickle
+import pickle as pickle
 import fcntl
 import os
 import re
@@ -62,7 +62,7 @@ class RichText(object):
         self.blink = blink
 
     def __str__(self):
-        if isinstance(self.text, unicode):
+        if isinstance(self.text, str):
             text = self.text.encode(sys.getfilesystemencoding())
         else:
             text = self.text
@@ -94,7 +94,7 @@ class CompoundRichText(RichText):
     def __str__(self):
         txt = ''
         for text in self.text_list:
-            if isinstance(text, unicode):
+            if isinstance(text, str):
                 text = text.encode(sys.getfilesystemencoding())
             else:
                 text = str(text)
@@ -117,7 +117,7 @@ class CompoundRichText(RichText):
 
 class Prompt(RichText):
     def __str__(self):
-        if isinstance(self.text, unicode):
+        if isinstance(self.text, str):
             text = self.text.encode(sys.getfilesystemencoding())
         else:
             text = self.text
@@ -165,7 +165,7 @@ class Input(object):
             self.lines = []
 
     def save_history(self):
-        with openfile(self.history_file, 'wb', permissions=0600) as history_file:
+        with openfile(self.history_file, 'wb', permissions=0o600) as history_file:
             pickle.dump(self.lines, history_file)
 
     def add_line(self, text=''):
@@ -237,9 +237,7 @@ class TTYFileWrapper(object):
             self.file.write(self.buffer)
 
 
-class UI(Thread):
-    __metaclass__ = Singleton
-
+class UI(Thread, metaclass=Singleton):
     control_chars = {'\x01': 'home',
                      '\x04': 'eof',
                      '\x05': 'end',
@@ -278,7 +276,7 @@ class UI(Thread):
         self.questions = deque()
         self.stopping = False
         self.lock = RLock()
-        self.event_queue = EventQueue(handler=lambda (function, self, args, kwargs): function(self, *args, **kwargs), name='UI operation handling')
+        self.event_queue = EventQueue(handler=lambda function_self_args_kwargs: function_self_args_kwargs[0](function_self_args_kwargs[1], *function_self_args_kwargs[2], **function_self_args_kwargs[3]), name='UI operation handling')
 
     def start(self, prompt='', command_sequence='/', control_char='\x18', control_bindings={}, display_commands=True, display_text=True):
         with self.lock:
@@ -402,7 +400,8 @@ class UI(Thread):
     @property
     def window_size(self):
         class WindowSize(tuple):
-            def __init__(ws_self, (y, x)):
+            def __init__(ws_self, xxx_todo_changeme):
+                (y, x) = xxx_todo_changeme
                 ws_self.x = x
                 ws_self.y = y if self.status is None else y-1
         return WindowSize(struct.unpack('HHHH', fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))[:2])
@@ -424,7 +423,7 @@ class UI(Thread):
     @run_in_ui_thread
     def _set_status(self, status):
         with self.lock:
-            if isinstance(status, unicode):
+            if isinstance(status, str):
                 status = status.encode(sys.getfilesystemencoding())
             try:
                 old_status = self.__dict__['status']
