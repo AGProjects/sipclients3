@@ -23,10 +23,10 @@ from zope.interface import implementer
 
 from sipsimple.account import Account, AccountManager, BonjourAccount
 from sipsimple.application import SIPApplication
-from sipsimple.lookup import DNSLookup
+from sipsimple.lookup import DNSLookup, DNSManager
 from sipsimple.configuration import ConfigurationError, ConfigurationManager
 from sipsimple.configuration.settings import SIPSimpleSettings
-from sipsimple.core import ContactHeader, Engine, FromHeader, RouteHeader, SIPCoreError, SIPURI, Subscription, ToHeader, Route
+from sipsimple.core import ContactHeader, Engine, FromHeader, RouteHeader, SIPCoreError, SIPURI, Subscription, ToHeader, Route, PJSIPError
 from sipsimple.payloads import ParserError
 from sipsimple.payloads import rpid # needed to register RPID extensions
 from sipsimple.payloads.pidf import Device, Person, Service, PIDF, PIDFDocument
@@ -115,7 +115,7 @@ class SubscriptionApplication(object):
     def run(self):
         account_manager = AccountManager()
         configuration = ConfigurationManager()
-        engine = Engine()
+        self.engine = Engine()
 
         # start output thread
         self.output.start()
@@ -157,9 +157,9 @@ class SubscriptionApplication(object):
         self.logger.start()
 
         # start the engine
-        engine.start(
+        self.engine.start(
             auto_sound=False,
-            events={'presence': [PIDFDocument.content_type]},
+            events={b"presence": [PIDFDocument.content_type.encode()]},
             udp_port=settings.sip.udp_port if "udp" in settings.sip.transport_list else None,
             tcp_port=settings.sip.tcp_port if "tcp" in settings.sip.transport_list else None,
             tls_port=settings.sip.tls_port if "tls" in settings.sip.transport_list else None,
@@ -185,7 +185,7 @@ class SubscriptionApplication(object):
                 self.target = ToHeader(SIPURI.parse(self.target))
             except SIPCoreError:
                 self.output.put('Illegal SIP URI: %s' % self.target)
-                engine.stop()
+                self.engine.stop()
                 return 1
         self.output.put('Subscribing to %s for the presence event' % self.target.uri)
 
@@ -213,8 +213,7 @@ class SubscriptionApplication(object):
         if self.subscription is not None and self.subscription.state.lower() in ('accepted', 'pending', 'active'):
             self.subscription.end(timeout=1)
         else:
-            engine = Engine()
-            engine.stop()
+            self.engine.stop()
 
     def print_help(self):
         message  = 'Available control keys:\n'
@@ -229,6 +228,10 @@ class SubscriptionApplication(object):
         handler = getattr(self, '_NH_%s' % notification.name, None)
         if handler is not None:
             handler(notification)
+
+    def _NH_SIPEngineDidStart(self, notification):
+        dns_manager = DNSManager()
+        self.engine.set_nameservers(dns_manager.nameservers)
 
     def _NH_SIPSubscriptionDidStart(self, notification):
         route = Route(notification.sender.route_header.uri.host, notification.sender.route_header.uri.port, notification.sender.route_header.uri.parameters.get('transport', 'udp'))
@@ -277,7 +280,7 @@ class SubscriptionApplication(object):
                                                  FromHeader(self.account.uri, self.account.display_name),
                                                  self.target,
                                                  ContactHeader(self.account.contact[route]),
-                                                 "presence",
+                                                 b"presence",
                                                  route_header,
                                                  credentials=self.account.credentials,
                                                  refresh=self.account.sip.subscribe_interval)
@@ -304,13 +307,16 @@ class SubscriptionApplication(object):
                                          FromHeader(self.account.uri, self.account.display_name),
                                          self.target,
                                          ContactHeader(self.account.contact[route]),
-                                         "presence",
+                                         b"presence",
                                          route_header,
                                          credentials=self.account.credentials,
                                          refresh=self.account.sip.subscribe_interval)
         notification_center = NotificationCenter()
         notification_center.add_observer(self, sender=self.subscription)
-        self.subscription.subscribe(timeout=5)
+        try:
+            self.subscription.subscribe(timeout=5)
+        except PJSIPError as e:
+            self.output.put('Subscription failed: %s' % str(e))
 
     def _NH_DNSLookupDidFail(self, notification):
         self.output.put('DNS lookup failed: %s' % notification.data.error)
@@ -318,16 +324,15 @@ class SubscriptionApplication(object):
         reactor.callLater(timeout, self._subscribe)
 
     def _NH_SAInputWasReceived(self, notification):
-        engine = Engine()
         settings = SIPSimpleSettings()
         key = notification.data.input
         if key == 't':
             self.logger.sip_to_stdout = not self.logger.sip_to_stdout
-            engine.trace_sip = self.logger.sip_to_stdout or settings.logs.trace_sip
+            self.engine.trace_sip = self.logger.sip_to_stdout or settings.logs.trace_sip
             self.output.put('SIP tracing to console is now %s.' % ('activated' if self.logger.sip_to_stdout else 'deactivated'))
         elif key == 'j':
             self.logger.pjsip_to_stdout = not self.logger.pjsip_to_stdout
-            engine.log_level = settings.logs.pjsip_level if (self.logger.pjsip_to_stdout or settings.logs.trace_pjsip) else 0
+            self.engine.log_level = settings.logs.pjsip_level if (self.logger.pjsip_to_stdout or settings.logs.trace_pjsip) else 0
             self.output.put('PJSIP tracing to console is now %s.' % ('activated' if self.logger.pjsip_to_stdout else 'deactivated'))
         elif key == 'n':
             self.logger.notifications_to_stdout = not self.logger.notifications_to_stdout

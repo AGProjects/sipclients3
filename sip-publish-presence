@@ -23,7 +23,7 @@ from twisted.internet import reactor
 from twisted.internet.error import ReactorNotRunning
 from zope.interface import implementer
 
-from sipsimple.core import Engine, FromHeader, Publication, PublicationError, RouteHeader, SIPCoreError, SIPURI
+from sipsimple.core import Engine, FromHeader, Publication, PublicationError, RouteHeader, SIPCoreError, SIPURI, PJSIPError
 from sipsimple.account import Account, AccountManager, BonjourAccount
 from sipsimple.application import SIPApplication
 from sipsimple.configuration import ConfigurationError, ConfigurationManager
@@ -801,6 +801,8 @@ class PublicationApplication(object):
         except BuilderError as e:
             self.output.put("PIDF as currently defined is invalid: %s" % str(e))
             self.publishing = False
+        except PJSIPError as e:
+            self.output.put("Publish failed: %s" % str(e))
         except:
             traceback.print_exc()
             self.publishing = False
