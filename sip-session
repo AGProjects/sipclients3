@@ -430,7 +430,7 @@ class OutgoingCallInitializer(object):
         except SIPCoreError:
             show_notice('Illegal SIP URI: %s' % self.target)
         else:
-            if '.' not in self.target.host and not isinstance(self.account, BonjourAccount):
+            if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
                 self.target.host = '%s.%s' % (self.target.host, self.account.id.domain)
             lookup = DNSLookup()
             notification_center = NotificationCenter()
@@ -564,7 +564,7 @@ class IncomingCallInitializer(object):
         if self.auto_answer_interval == 0:
             self.session.accept(self.session.proposed_streams)
             return
-        elif self.auto_answer_interval > 0:
+        elif self.auto_answer_interval and self.auto_answer_interval > 0:
             self.answer_timer = reactor.callFromThread(reactor.callLater, self.auto_answer_interval, self.session.accept, self.session.proposed_streams)
 
         # start ringing
@@ -897,7 +897,7 @@ class OutgoingTransferHandler(object):
 
         show_notice('Preparing transfer...')
         self.file_selector = FileSelector.for_file(self.filepath)
-        if '.' not in self.target.host and not isinstance(self.account, BonjourAccount):
+        if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
             self.target.host = '%s.%s' % (self.target.host, self.account.id.domain)
         lookup = DNSLookup()
         notification_center = NotificationCenter()
@@ -1472,8 +1472,7 @@ class SIPSessionApplication(SIPApplication):
         show_notice('%s Registration ended for %s' % (datetime.now().replace(microsecond=0), account.id))
 
     def _NH_BonjourAccountRegistrationDidSucceed(self, notification):
-        pass
-        #show_notice('%s Registered Bonjour contact "%s"' % (datetime.now().replace(microsecond=0), notification.data.name))
+        show_notice('%s Registered Bonjour contact %s' % (datetime.now().replace(microsecond=0), notification.data.name))
 
     def _NH_BonjourAccountRegistrationDidFail(self, notification):
         show_notice('%s Failed to register Bonjour contact: %s' % (datetime.now().replace(microsecond=0), notification.data.reason))
@@ -1886,8 +1885,8 @@ class SIPSessionApplication(SIPApplication):
         data = notification.data
         stream = notification.sender
         if data.new_state is OTRState.Encrypted:
-            local_fingerprint = stream.encryption.key_fingerprint.encode('hex').upper()
-            remote_fingerprint = stream.encryption.peer_fingerprint.encode('hex').upper()
+            local_fingerprint = stream.encryption.key_fingerprint.upper()
+            remote_fingerprint = stream.encryption.peer_fingerprint.upper()
             show_notice("Chat encryption activated using OTR protocol", bold=False)
             show_notice("OTR local fingerprint %s" % local_fingerprint, bold=False)
             show_notice("OTR remote fingerprint %s" % remote_fingerprint, bold=False)
@@ -2761,6 +2760,7 @@ class SIPSessionApplication(SIPApplication):
         show_notice(lines, bold=False)
 
     def _update_prompt(self):
+        return
         ui = UI()
         session = self.active_session
         if session is None:

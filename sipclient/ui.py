@@ -94,11 +94,7 @@ class CompoundRichText(RichText):
     def __str__(self):
         txt = ''
         for text in self.text_list:
-            if isinstance(text, str):
-                text = text.encode(sys.getfilesystemencoding())
-            else:
-                text = str(text)
-            txt += text
+            txt += str(text)
         return txt
 
     def __len__(self):
@@ -304,16 +300,17 @@ class UI(Thread, metaclass=Singleton):
             old_settings = termios.tcgetattr(stdin_fd)
             new_settings = termios.tcgetattr(stdin_fd)
             new_settings[3] &= ~termios.ECHO & ~termios.ICANON
-            new_settings[6][termios.VMIN] = '\000'
+            new_settings[6][termios.VMIN] = b'\000'
             termios.tcsetattr(stdin_fd, termios.TCSADRAIN, new_settings)
             atexit.register(termios.tcsetattr, stdin_fd, termios.TCSADRAIN, old_settings)
 
             # find out cursor position in terminal
             self._raw_write('\x1b[6n')
             if select.select([stdin_fd], [], [], None)[0]:
-                line, col = os.read(stdin_fd, 10)[2:-1].split(';')
+                line, col = os.read(stdin_fd, 10).decode()[2:-1].split(';')
                 line = int(line)
                 col = int(col)
+
 
             # scroll down the terminal until everything goes up
             self._scroll_up(line-1)
@@ -455,7 +452,7 @@ class UI(Thread, metaclass=Singleton):
         while True:
             stdin_fd = sys.__stdin__.fileno()
             if select.select([stdin_fd], [], [], None)[0]:
-                chars = list(os.read(stdin_fd, 4096))
+                chars = list(os.read(stdin_fd, 4096).decode('ascii'))
                 while chars:
                     if self.stopping:
                         return
@@ -482,7 +479,8 @@ class UI(Thread, metaclass=Singleton):
                             if char in self.application_control_bindings:
                                 notification_center = NotificationCenter()
                                 words = [word for word in re.split(r'\s+', self.application_control_bindings[char]) if word]
-                                notification_center.post_notification('UIInputGotCommand', sender=self, data=NotificationData(command=words[0], args=words[1:]))
+                                if len(words) > 0:
+                                    notification_center.post_notification('UIInputGotCommand', sender=self, data=NotificationData(command=words[0], args=words[1:]))
                         elif self.questions:
                             question = self.questions[0]
                             if char in question.answers:
@@ -586,7 +584,7 @@ class UI(Thread, metaclass=Singleton):
 
     def _scroll_up(self, lines):
         window_height = struct.unpack('HHHH', fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))[0]
-        self._raw_write('\x1b[s\x1b[%d;1H' % window_height + '\x1bD' * lines + '\x1b[u')
+        self._raw_write('\x1b[s\x1b[%d;1H' % int(window_height) + '\x1bD' * int(lines) + '\x1b[u')
 
     # control character handlers
     #
@@ -634,7 +632,8 @@ class UI(Thread, metaclass=Singleton):
                         self._scroll_up(scroll_up)
                 # send a notification about the new input
                 words = [word for word in re.split(r'\s+', current_line[len(self.command_sequence):]) if word]
-                notification_center.post_notification('UIInputGotCommand', sender=self, data=NotificationData(command=words[0], args=words[1:]))
+                if len(words) > 0:
+                    notification_center.post_notification('UIInputGotCommand', sender=self, data=NotificationData(command=words[0], args=words[1:]))
             else:
                 # calculate the new position of the prompt
                 if self.display_text:

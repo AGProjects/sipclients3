@@ -106,9 +106,6 @@ class SIPMessageApplication(SIPApplication):
         self.logger = None
 
     def _write(self, message):
-        print('message %s %s' % (message, type(message)))
-        #if isinstance(message, str):
-        #    message = message.encode(sys.getfilesystemencoding())
         sys.stdout.write(message)
         sys.stdout.flush()
 

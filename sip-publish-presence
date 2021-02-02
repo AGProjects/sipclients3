@@ -808,6 +808,7 @@ class PublicationApplication(object):
             self.publishing = False
 
     def _output_handler(self, event):
+        event = event.decode() if isinstance(event, bytes) else event
         if isinstance(event, Prompt):
             sys.stdout.write(event+'> ')
             sys.stdout.flush()
