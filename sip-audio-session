@@ -668,7 +668,7 @@ class SIPAudioApplication(SIPApplication):
         notification_center = NotificationCenter()
         
         result_text = ', '.join(('%s:%s (%s)' % (result.address, result.port, result.transport.upper()) for result in notification.data.result))
-        self.output.put("\nDNS lookup for %s succeeded: %s\n" % (self.target.host, result_text))
+        self.output.put("\nDNS lookup for %s succeeded: %s\n" % (self.target.host.decode(), result_text))
 
         if self.end_session_if_needed():
             self.stop()
@@ -705,7 +705,7 @@ class SIPAudioApplication(SIPApplication):
             if stream.type in ('audio', 'chat'):
                 break
         else:
-            self.output.put('Session rejected\n')
+            self.output.put('Session rejected with %d streams\n' % (len(notification.data.streams)))
             session.reject(415)
             return
 
@@ -831,37 +831,38 @@ class SIPAudioApplication(SIPApplication):
         stream = notification.data.streams[0]
         
         if stream.type == 'audio':
-            self.output.put('Audio stream established using "%s" codec at %sHz\n' % (audio_stream.codec, audio_stream.sample_rate))
+            self.output.put('Audio stream established using "%s" codec at %sHz\n' % (stream.codec.decode(), stream.sample_rate))
 
-            if audio_stream.ice_active:
-                self.output.put('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (audio_stream.local_rtp_address,
-                                                                                                       audio_stream.local_rtp_port,
-                                                                                                       audio_stream.local_rtp_candidate.type.lower(),
-                                                                                                       audio_stream.remote_rtp_address,
-                                                                                                       audio_stream.remote_rtp_port,
-                                                                                                       audio_stream.remote_rtp_candidate.type.lower()))
+            if stream.ice_active:
+                self.output.put('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.local_rtp_address.decode(),
+                                                                                                       stream.local_rtp_port,
+                                                                                                       stream.local_rtp_candidate.type.lower(),
+                                                                                                       stream.remote_rtp_address,
+                                                                                                       stream.remote_rtp_port,
+                                                                                                       stream.remote_rtp_candidate.type.lower()))
             else:
-                self.output.put('Audio RTP endpoints %s:%d <-> %s:%d\n' % (audio_stream.local_rtp_address, audio_stream.local_rtp_port, audio_stream.remote_rtp_address, audio_stream.remote_rtp_port))
-            if audio_stream.encryption.active:
-                self.output.put('RTP audio stream is encrypted using %s (%s)\n' % (audio_stream.encryption.type, audio_stream.encryption.cipher))
+                self.output.put('Audio RTP endpoints %s:%d <-> %s:%d\n' % (stream.local_rtp_address.decode(), stream.local_rtp_port, stream.remote_rtp_address.decode(), stream.remote_rtp_port))
+            if stream.encryption.active:
+                self.output.put('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher))
 
         try:
             video_stream = notification.data.streams[1]
         except IndexError:
             video_stream = None
         else:
-            self.output.put('Video stream established using "%s" codec at %sHz\n' % (video_stream.codec, video_stream.sample_rate))
-            if video_stream.ice_active:
-                self.output.put('Video RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (video_stream.local_rtp_address,
-                                                                                                       video_stream.local_rtp_port,
-                                                                                                       video_stream.local_rtp_candidate.type.lower(),
-                                                                                                       video_stream.remote_rtp_address,
-                                                                                                       video_stream.remote_rtp_port,
-                                                                                                       video_stream.remote_rtp_candidate.type.lower()))
-            else:
-                self.output.put('Video RTP endpoints %s:%d <-> %s:%d\n' % (video_stream.local_rtp_address, video_stream.local_rtp_port, video_stream.remote_rtp_address, video_stream.remote_rtp_port))
-            if video_stream.encryption.active:
-                self.output.put('RTP video stream is encrypted using %s (%s)\n' % (video_stream.encryption.type, video_stream.encryption.cipher))
+            if video_stream.type == 'video':
+                self.output.put('Video stream established using "%s" codec at %sHz\n' % (video_stream.codec, video_stream.sample_rate))
+                if video_stream.ice_active:
+                    self.output.put('Video RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (video_stream.local_rtp_address.decode(),
+                                                                                                           video_stream.local_rtp_port,
+                                                                                                           video_stream.local_rtp_candidate.type.lower(),
+                                                                                                           video_stream.remote_rtp_address,
+                                                                                                           video_stream.remote_rtp_port,
+                                                                                                           video_stream.remote_rtp_candidate.type.lower()))
+                else:
+                    self.output.put('Video RTP endpoints %s:%d <-> %s:%d\n' % (video_stream.local_rtp_address.decode(), video_stream.local_rtp_port, video_stream.remote_rtp_address.decode(), video_stream.remote_rtp_port))
+                if video_stream.encryption.active:
+                    self.output.put('RTP video stream is encrypted using %s (%s)\n' % (video_stream.encryption.type, video_stream.encryption.cipher))
             
         self.started_sessions.append(session)
         if self.active_session is not None:
@@ -1052,6 +1053,7 @@ class SIPAudioApplication(SIPApplication):
         notification_center = NotificationCenter()
         digit = notification.data.digit
         filename = 'sounds/dtmf_%s_tone.wav' % {'*': 'star', '#': 'pound'}.get(digit, digit)
+        self.output.put('DTMF code received: %s\n' % digit)
         wave_player = WavePlayer(self.voice_audio_mixer, ResourcePath(filename).normalized)
         notification_center.add_observer(self, sender=wave_player)
         self.voice_audio_bridge.add(wave_player)
@@ -1079,10 +1081,10 @@ class SIPAudioApplication(SIPApplication):
             return
         self.output.put(notification.data.message.content)
 
-    def _NH_AudioStreamDidStartRecordingAudio(self, notification):
+    def _NH_AudioStreamDidStartRecording(self, notification):
         self.output.put('Recording audio to %s\n' % notification.data.filename)
 
-    def _NH_AudioStreamDidStopRecordingAudio(self, notification):
+    def _NH_AudioStreamDidStopRecording(self, notification):
         self.output.put('Stopped recording audio to %s\n' % notification.data.filename)
 
     def _NH_WavePlayerDidEnd(self, notification):
