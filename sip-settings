@@ -234,7 +234,6 @@ class AccountConfigurator(object):
                 name = attrname
                 while '.' in name:
                     local_name, name = name.split('.', 1)
-                    print(dir(account))
                     try:
                         object = getattr(object, local_name)
                     except AttributeError:

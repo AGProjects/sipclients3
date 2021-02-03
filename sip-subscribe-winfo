@@ -258,7 +258,7 @@ class WinfoApplication(object):
                                                  FromHeader(self.account.uri, self.account.display_name),
                                                  ToHeader(self.account.uri, self.account.display_name),
                                                  ContactHeader(self.account.contact[route]),
-                                                 "presence.winfo",
+                                                 b"presence.winfo",
                                                  route_header,
                                                  credentials=self.account.credentials,
                                                  refresh=self.account.sip.subscribe_interval)
@@ -278,7 +278,7 @@ class WinfoApplication(object):
                                          FromHeader(self.account.uri, self.account.display_name),
                                          ToHeader(self.account.uri, self.account.display_name),
                                          ContactHeader(self.account.contact[route]),
-                                         "presence.winfo",
+                                         b"presence.winfo",
                                          route_header,
                                          credentials=self.account.credentials,
                                          refresh=self.account.sip.subscribe_interval)

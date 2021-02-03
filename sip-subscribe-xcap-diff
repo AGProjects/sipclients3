@@ -274,12 +274,12 @@ class SubscriptionApplication(object):
                                                  FromHeader(self.account.uri, self.account.display_name),
                                                  self.target,
                                                  ContactHeader(self.account.contact[route]),
-                                                 "xcap-diff",
+                                                 b"xcap-diff",
                                                  route_header,
                                                  credentials=self.account.credentials,
                                                  refresh=self.account.sip.subscribe_interval)
                 notification_center.add_observer(self, sender=self.subscription)
-                self.subscription.subscribe(body=self.body, content_type=self.content_type, timeout=5)
+                self.subscription.subscribe(body=self.body.encode(), content_type=self.content_type, timeout=5)
 
     def _NH_SIPSubscriptionGotNotify(self, notification):
         if notification.data.content_type == XCAPDiffDocument.content_type:
@@ -300,13 +300,13 @@ class SubscriptionApplication(object):
                                          FromHeader(self.account.uri, self.account.display_name),
                                          self.target,
                                          ContactHeader(self.account.contact[route]),
-                                         "xcap-diff",
+                                         b"xcap-diff",
                                          route_header,
                                          credentials=self.account.credentials,
                                          refresh=self.account.sip.subscribe_interval)
         notification_center = NotificationCenter()
         notification_center.add_observer(self, sender=self.subscription)
-        self.subscription.subscribe(body=self.body, content_type=self.content_type, timeout=5)
+        self.subscription.subscribe(body=self.body.encode(), content_type=self.content_type, timeout=5)
 
     def _NH_DNSLookupDidFail(self, notification):
         self.output.put('DNS lookup failed: %s' % notification.data.error)

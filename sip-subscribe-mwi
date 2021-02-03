@@ -268,7 +268,7 @@ class SubscriptionApplication(object):
                                                  FromHeader(self.account.uri, self.account.display_name),
                                                  self.target,
                                                  ContactHeader(self.account.contact[route]),
-                                                 "message-summary",
+                                                 b"message-summary",
                                                  route_header,
                                                  credentials=self.account.credentials,
                                                  refresh=self.account.sip.subscribe_interval)
@@ -290,7 +290,7 @@ class SubscriptionApplication(object):
                                          FromHeader(self.account.uri, self.account.display_name),
                                          self.target,
                                          ContactHeader(self.account.contact[route]),
-                                         "message-summary",
+                                         b"message-summary",
                                          route_header,
                                          credentials=self.account.credentials,
                                          refresh=self.account.sip.subscribe_interval)
