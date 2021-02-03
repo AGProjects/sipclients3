@@ -1031,7 +1031,7 @@ class IncomingTransferHandler(object):
         if self.auto_answer_interval == 0:
             self.session.accept(self.session.proposed_streams)
             return
-        elif self.auto_answer_interval > 0:
+        elif (self.auto_answer_interval and self.auto_answer_interval > 0):
             self.answer_timer = reactor.callFromThread(reactor.callLater, self.auto_answer_interval, self.session.accept, self.session.proposed_streams)
 
         # start ringing
@@ -1133,7 +1133,7 @@ class IncomingTransferHandler(object):
         identity = str(session.remote_identity.uri)
         if session.remote_identity.display_name:
             identity = '"%s" <%s>' % (session.remote_identity.display_name, identity)
-        show_notice("File transfer for %s with '%s' started" % (os.path.basename(self.filename), identity))
+        show_notice("File transfer for %s with %s started" % (os.path.basename(self.filename), identity))
 
         if IncomingTransferHandler.sessions == 1:
             if self.wave_ringtone:
@@ -1596,6 +1596,19 @@ class SIPSessionApplication(SIPApplication):
             transfer_handler = IncomingTransferHandler(session, self.options.auto_answer_interval)
             transfer_handler.start()
         else:
+            for stream in notification.data.streams:
+                if stream.type in ('audio', 'chat'):
+                    break
+            else:
+                remote_identity = str(session.remote_identity.uri)
+                if session.remote_identity.display_name:
+                    remote_identity = '"%s" <%s>' % (session.remote_identity.display_name, remote_identity)
+
+                show_notice('Session from %s rejected due to incompatible media' % remote_identity)
+                session.reject(415)
+                return
+
+
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=session)
             call_initializer = IncomingCallInitializer(session, self.options.auto_answer_interval)

@@ -705,7 +705,11 @@ class SIPAudioApplication(SIPApplication):
             if stream.type in ('audio', 'chat'):
                 break
         else:
-            self.output.put('Session rejected with %d streams\n' % (len(notification.data.streams)))
+            remote_identity = str(session.remote_identity.uri)
+            if session.remote_identity.display_name:
+                remote_identity = '"%s" <%s>' % (session.remote_identity.display_name, remote_identity)
+
+            self.output.put('Session from %s rejected due to incompatible media\n' % remote_identity)
             session.reject(415)
             return
 

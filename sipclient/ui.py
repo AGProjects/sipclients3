@@ -452,7 +452,7 @@ class UI(Thread, metaclass=Singleton):
         while True:
             stdin_fd = sys.__stdin__.fileno()
             if select.select([stdin_fd], [], [], None)[0]:
-                chars = list(os.read(stdin_fd, 4096).decode('ascii'))
+                chars = list(os.read(stdin_fd, 4096).decode())
                 while chars:
                     if self.stopping:
                         return
