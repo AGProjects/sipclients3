@@ -407,10 +407,12 @@ OTRTransport.register(MessageSession)
 @implementer(IObserver)
 class OutgoingCallInitializer(object):
 
-    def __init__(self, account, target, audio=False, chat=False):
+    def __init__(self, account, target, audio=False, chat=False, video=False):
         self.account = account
         self.target = target
         self.streams = []
+        if video:
+            self.streams.append(MediaStreamRegistry.VideoStream())
         if audio:
             self.streams.append(MediaStreamRegistry.AudioStream())
         if chat:
@@ -1178,6 +1180,7 @@ class SIPSessionApplication(SIPApplication):
         self.options = None
         self.target = None
         self.filepath = None
+        self.enable_video = False
         
         self.active_session = None
         self.message_session_to = None
@@ -1355,7 +1358,7 @@ class SIPSessionApplication(SIPApplication):
             if self.filepath:
                 self.send_outgoing_file(self.target, self.filepath)
             else:            
-                call_initializer = OutgoingCallInitializer(self.account, self.target, audio=True, chat=True)
+                call_initializer = OutgoingCallInitializer(self.account, self.target, audio=True, chat=True, video=True)
                 call_initializer.start()
 
     def _NH_SIPApplicationWillEnd(self, notification):
@@ -2303,14 +2306,23 @@ class SIPSessionApplication(SIPApplication):
             show_notice('Using audio input device: %s (system default device)' % self.voice_audio_mixer.real_input_device, bold=False)
         else:
             show_notice('Using audio input device: %s' % self.voice_audio_mixer.input_device, bold=False)
+
         if self.voice_audio_mixer.output_device == 'system_default':
             show_notice('Using audio output device: %s (system default device)' % self.voice_audio_mixer.real_output_device, bold=False)
         else:
             show_notice('Using audio output device: %s' % self.voice_audio_mixer.output_device, bold=False)
+
         if self.alert_audio_mixer.output_device == 'system_default':
             show_notice('Using audio alert device: %s (system default device)' % self.alert_audio_mixer.real_output_device, bold=False)
         else:
             show_notice('Using audio alert device: %s' % self.alert_audio_mixer.output_device, bold=False)
+
+        if engine.video_devices:
+            show_notice('Available cameras: %s' % ', '.join(sorted(engine.video_devices)))
+        else:
+            if self.enable_video:
+                show_notice('No camera present, video is disabled')
+                self.enable_video = False
 
     def _CH_help(self):
         self._print_help()

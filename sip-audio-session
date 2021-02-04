@@ -828,14 +828,14 @@ class SIPAudioApplication(SIPApplication):
     def _NH_SIPSessionDidStart(self, notification):
         notification_center = NotificationCenter()
         session = notification.sender
-        self.output.put('Session started with %d streams' % len(notification.data.streams))
+        self.output.put('Session started with %d streams\n' % len(notification.data.streams))
         if session.remote_user_agent is not None:
             self.output.put('Remote SIP User Agent is "%s"\n' % session.remote_user_agent)
 
         stream = notification.data.streams[0]
         
         if stream.type == 'audio':
-            self.output.put('Audio stream established using "%s" codec at %sHz\n' % (stream.codec.decode(), stream.sample_rate))
+            self.output.put('Audio stream established using %s codec at %sHz\n' % (stream.codec.decode().capitalize(), stream.sample_rate))
 
             if stream.ice_active:
                 self.output.put('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.local_rtp_address.decode(),
@@ -855,7 +855,7 @@ class SIPAudioApplication(SIPApplication):
             video_stream = None
         else:
             if video_stream.type == 'video':
-                self.output.put('Video stream established using "%s" codec at %sHz\n' % (video_stream.codec, video_stream.sample_rate))
+                self.output.put('Video stream established using %s codec at %sHz\n' % (video_stream.codec.decode(), video_stream.sample_rate))
                 if video_stream.ice_active:
                     self.output.put('Video RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (video_stream.local_rtp_address.decode(),
                                                                                                            video_stream.local_rtp_port,
