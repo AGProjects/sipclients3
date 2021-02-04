@@ -358,7 +358,7 @@ class ExtendedStatusMenu(Menu):
                 service.status.basic = 'open'
             service.status.extended = status
             self.interface.application.publish()
-            self.interface.application.output.put('Extended atatus set')
+            self.interface.application.output.put('Extended status set')
         self.interface.show_top_level()
 
     def _del_extended_status(self):
