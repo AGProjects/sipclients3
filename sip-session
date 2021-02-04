@@ -473,7 +473,7 @@ class OutgoingCallInitializer(object):
         remote_identity = str(session.remote_identity.uri)
         if session.remote_identity.display_name:
             remote_identity = '"%s" <%s>' % (session.remote_identity.display_name, remote_identity)
-        show_notice("Initiating SIP session from '%s' to '%s' via %s..." % (local_identity, remote_identity, session.route))
+        show_notice("Initiating SIP session from %s to %s via %s..." % (local_identity, remote_identity, session.route))
         self.message_session_to = None
 
     def _NH_SIPSessionGotRingIndication(self, notification):
@@ -589,7 +589,7 @@ class IncomingCallInitializer(object):
         if self.session.remote_identity.display_name:
             identity = '"%s" <%s>' % (self.session.remote_identity.display_name, identity)
         streams = '/'.join(stream.type for stream in self.session.proposed_streams)
-        self.question = Question("Incoming %s from '%s', do you want to accept? (a)ccept/(r)eject/(b)usy" % (streams, identity), 'arbi', bold=True)
+        self.question = Question("Incoming %s from %s, do you want to accept? (a)ccept/(r)eject/(b)usy" % (streams, identity), 'arbi', bold=True)
         notification_center.add_observer(self, sender=self.question)
         ui = UI()
         ui.add_question(self.question)
@@ -650,7 +650,7 @@ class IncomingCallInitializer(object):
         identity = str(session.remote_identity.uri)
         if session.remote_identity.display_name:
             identity = '"%s" <%s>' % (session.remote_identity.display_name, identity)
-        show_notice("SIP session with '%s' established" % identity)
+        show_notice("SIP session with %s established" % identity)
         for stream in notification.data.streams:
             if stream.type == 'audio':
                 show_notice('Audio stream using "%s" codec at %sHz' % (stream.codec, stream.sample_rate))
@@ -926,9 +926,9 @@ class OutgoingTransferHandler(object):
             self.wave_ringtone = None
 
         if failure_reason is None:
-            show_notice('File transfer of %s finished' % os.path.basename(self.filepath))
+            show_notice('File transfer of %s succeeded' % self.filepath)
         else:
-            show_notice('File transfer of %s failed: %s' % (os.path.basename(self.filepath), failure_reason))
+            show_notice('File transfer of %s failed: %s' % (self.filepath, failure_reason))
 
         self.session = None
         self.stream = None
@@ -1077,9 +1077,9 @@ class IncomingTransferHandler(object):
             self.wave_ringtone.stop()
 
         if failure_reason is None:
-            show_notice('File transfer of %s finished' % os.path.basename(self.filename))
+            show_notice('File saved to %s' % self.filename)
         else:
-            show_notice('File transfer of %s failed: %s' % (os.path.basename(self.filename), failure_reason))
+            show_notice('File transfer of %s failed: %s' % (self.filename, failure_reason))
 
         self.session = None
         self.stream = None
@@ -1834,7 +1834,7 @@ class SIPSessionApplication(SIPApplication):
     def _NH_RTPStreamDidChangeRTPParameters(self, notification):
         stream = notification.sender
         show_notice('Audio RTP parameters changed:')
-        show_notice('Audio stream using "%s" codec at %sHz' % (stream.codec.decode(), stream.sample_rate))
+        show_notice('Audio stream using %s codec at %sHz' % (stream.codec.decode().capitalize(), stream.sample_rate))
         show_notice('Audio RTP endpoints %s:%d <-> %s:%d' % (stream.local_rtp_address.decode(), stream.local_rtp_port, stream.remote_rtp_address, stream.remote_rtp_port))
         if stream.encryption.active:
             show_notice('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher))
@@ -2841,7 +2841,7 @@ def parse_handle_call_option(option, opt_str, value, parser, name):
 
 if __name__ == '__main__':
     description = '%prog is a command-line client for handling multiple audio, chat and file-transfer sessions'
-    usage = '%prog [options] [user@domain] [file]'
+    usage = '%prog [options] [user@domain] [filename]'
     parser = OptionParser(usage=usage, description=description)
     parser.print_usage = parser.print_help
     parser.add_option('-a', '--account', type='string', dest='account', help='The account name to use for any outgoing traffic. If not supplied, the default account will be used.', metavar='NAME')
