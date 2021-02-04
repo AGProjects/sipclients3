@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import binascii
 import os
 import re
 import signal
@@ -506,9 +507,9 @@ class OutgoingCallInitializer(object):
 
         for stream in notification.data.streams:
             if stream.type == 'audio':
-                show_notice('Audio session established using "%s" codec at %sHz' % (stream.codec, stream.sample_rate))
+                show_notice('Audio session established using "%s" codec at %sHz' % (stream.codec.decode(), stream.sample_rate))
                 if stream.ice_active:
-                    show_notice('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)' % (stream.local_rtp_address,
+                    show_notice('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)' % (stream.local_rtp_address.decode(),
                                                                                                      stream.local_rtp_port,
                                                                                                      stream.local_rtp_candidate.type.lower(),
                                                                                                      stream.remote_rtp_address,
@@ -872,7 +873,7 @@ class OutgoingTransferHandler(object):
     def __init__(self, account, target, filepath):
         self.account = account
         self.target = target
-        self.filepath = filepath.decode(sys.getfilesystemencoding())
+        self.filepath = filepath
         self.file_selector = None
         self.hash_compute_proc = None
         self.session = None
@@ -1176,6 +1177,7 @@ class SIPSessionApplication(SIPApplication):
         self.account = None
         self.options = None
         self.target = None
+        self.filepath = None
         
         self.active_session = None
         self.message_session_to = None
@@ -1205,7 +1207,7 @@ class SIPSessionApplication(SIPApplication):
         self.smp_verification_tries = 5
         self.smp_secret = None
 
-    def start(self, target, options):
+    def start(self, target, options, filepath=None):
         notification_center = NotificationCenter()
 
         ui = UI()
@@ -1215,6 +1217,7 @@ class SIPSessionApplication(SIPApplication):
 
         self.options = options
         self.target = target
+        self.filepath = filepath
         self.logger = Logger(sip_to_stdout=options.trace_sip,
                              msrp_to_stdout=options.trace_msrp,
                              pjsip_to_stdout=options.trace_pjsip,
@@ -1349,8 +1352,11 @@ class SIPSessionApplication(SIPApplication):
         show_notice('Type /help to see a list of available commands.', bold=False)
 
         if self.target is not None:
-            call_initializer = OutgoingCallInitializer(self.account, self.target, audio=True)
-            call_initializer.start()
+            if self.filepath:
+                self.send_outgoing_file(self.target, self.filepath)
+            else:            
+                call_initializer = OutgoingCallInitializer(self.account, self.target, audio=True, chat=True)
+                call_initializer.start()
 
     def _NH_SIPApplicationWillEnd(self, notification):
         show_notice('Application will end')
@@ -1818,7 +1824,8 @@ class SIPSessionApplication(SIPApplication):
 
         if stream.encryption.type == 'ZRTP':
             peer_name = stream.encryption.zrtp.peer_name if stream.encryption.zrtp.peer_name else None
-            show_notice("ZRTP secret is %s" % stream.encryption.zrtp.sas)
+            sas = stream.encryption.zrtp.sas.decode() if isinstance(stream.encryption.zrtp.sas, bytes) else stream.encryption.zrtp.sas
+            show_notice("ZRTP secret is %s" % sas)
             show_notice("ZRTP peer name is %s, use /zrtp_name command to change it" % (peer_name or 'not set'))
             show_notice("ZRTP peer is %s, use /zrtp_verified command to toggle it" % ('verified' if stream.encryption.zrtp.verified else 'not verified'))
 
@@ -1827,8 +1834,8 @@ class SIPSessionApplication(SIPApplication):
     def _NH_RTPStreamDidChangeRTPParameters(self, notification):
         stream = notification.sender
         show_notice('Audio RTP parameters changed:')
-        show_notice('Audio stream using "%s" codec at %sHz' % (stream.codec, stream.sample_rate))
-        show_notice('Audio RTP endpoints %s:%d <-> %s:%d' % (stream.local_rtp_address, stream.local_rtp_port, stream.remote_rtp_address, stream.remote_rtp_port))
+        show_notice('Audio stream using "%s" codec at %sHz' % (stream.codec.decode(), stream.sample_rate))
+        show_notice('Audio RTP endpoints %s:%d <-> %s:%d' % (stream.local_rtp_address.decode(), stream.local_rtp_port, stream.remote_rtp_address, stream.remote_rtp_port))
         if stream.encryption.active:
             show_notice('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher))
 
@@ -1898,8 +1905,8 @@ class SIPSessionApplication(SIPApplication):
         data = notification.data
         stream = notification.sender
         if data.new_state is OTRState.Encrypted:
-            local_fingerprint = stream.encryption.key_fingerprint.upper()
-            remote_fingerprint = stream.encryption.peer_fingerprint.upper()
+            local_fingerprint = binascii.hexlify(stream.encryption.key_fingerprint).upper()
+            remote_fingerprint = binascii.hexlify(stream.encryption.peer_fingerprint).upper()
             show_notice("Chat encryption activated using OTR protocol", bold=False)
             show_notice("OTR local fingerprint %s" % local_fingerprint, bold=False)
             show_notice("OTR remote fingerprint %s" % remote_fingerprint, bold=False)
@@ -1966,7 +1973,7 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
         show_notice(" ")
-        show_notice("ICE negotiation succeeded in %s" % notification.data.duration)
+        show_notice("ICE negotiation succeeded in %s seconds" % notification.data.duration)
         if self.rtp_statistics:
             show_notice(" ")
             show_notice("Local ICE candidates:")
@@ -2027,12 +2034,19 @@ class SIPSessionApplication(SIPApplication):
         call_initializer = OutgoingCallInitializer(self.account, target, audio=audio_option=='+audio', chat=True)
         call_initializer.start()
 
-    def _CH_send(self, target, filepath):
+    def send_outgoing_file(self, target, filepath):
         if '~' in filepath:
             filepath = os.path.expanduser(filepath)
         filepath = os.path.abspath(filepath)
-        transfer_handler = OutgoingTransferHandler(self.account, target, filepath)
-        transfer_handler.start()
+        if (os.path.exists(filepath)):
+            transfer_handler = OutgoingTransferHandler(self.account, target, filepath)
+            transfer_handler.start()
+        else:
+            show_notice('File %s does not exist' % filepath)
+
+
+    def _CH_send(self, target, filepath):
+        self.send_outgoing_file(target, filepath)
 
     def _CH_next(self):
         if len(self.connected_sessions) > 1:
@@ -2827,7 +2841,7 @@ def parse_handle_call_option(option, opt_str, value, parser, name):
 
 if __name__ == '__main__':
     description = '%prog is a command-line client for handling multiple audio, chat and file-transfer sessions'
-    usage = '%prog [options] [user@domain]'
+    usage = '%prog [options] [user@domain] [file]'
     parser = OptionParser(usage=usage, description=description)
     parser.print_usage = parser.print_help
     parser.add_option('-a', '--account', type='string', dest='account', help='The account name to use for any outgoing traffic. If not supplied, the default account will be used.', metavar='NAME')
@@ -2844,9 +2858,10 @@ if __name__ == '__main__':
     options, args = parser.parse_args()
 
     target = args[0] if args else None
+    filepath = args[1] if len(args) == 2 else None
 
     application = SIPSessionApplication()
-    application.start(target, options)
+    application.start(target, options, filepath)
 
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     application.stopped_event.wait()
