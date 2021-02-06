@@ -7,7 +7,7 @@ import glob
 import sipclient
 
 setup(
-    name='sipclients',
+    name='sipclients3',
     version=sipclient.__version__,
 
     description='SIP SIMPLE client',

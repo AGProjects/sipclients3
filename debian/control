@@ -7,19 +7,18 @@ Build-Depends: debhelper (>= 11), dh-python, python3
 Standards-Version: 4.5.0
 Homepage: http://sipsimpleclient.org
 
-Package: sipclients
+Package: sipclients3
 Section: net
 Architecture: all
-Depends: ${python:Depends}, ${misc:Depends},
+Depends: ${python3:Depends}, ${misc:Depends},
          libavahi-compat-libdnssd1,
-         python3-application (>= 2.8.0),
+         python3-application,
          python3-eventlib,
          python3-requests,
          python3-lxml,
          python3-sipsimple,
          python3-twisted,
          python3-zope.interface
-Conflicts: sipsimple-cli
 Description: SIP SIMPLE Command Line Clients
  This package contains Command Line Clients for testing SIP SIMPLE client
  SDK from http://sipsimpleclient.org. They demonstrate the SDK capabilities

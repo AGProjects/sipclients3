@@ -1,4 +1,4 @@
-sipclients (4.0.0) unstablce; urgency=medium
+sipclients (4.0.0) unstable; urgency=medium
 
   * Migrate to Python3
   * Added outgoing file transfer to sip-session
