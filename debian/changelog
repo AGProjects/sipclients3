@@ -1,3 +1,11 @@
+sipclients (4.0.0) unstablce; urgency=medium
+
+  * Migrate to Python3
+  * Added outgoing file transfer to sip-session
+  * Added video to sip-session
+
+ -- Adrian Georgescu <ag@ag-projects.com>  Sat, 06 Feb 2021 12:59:26 +0100
+
 sipclients (3.5.6) unstable; urgency=medium
 
   * Added SIP message support for sip-session script
