@@ -62,11 +62,7 @@ class RichText(object):
         self.blink = blink
 
     def __str__(self):
-        if isinstance(self.text, str):
-            text = self.text.encode(sys.getfilesystemencoding())
-        else:
-            text = self.text
-        return '\x1b[%sm%s\x1b[0m' % (self.mode, text)
+        return '\x1b[%sm%s\x1b[0m' % (self.mode, self.text)
 
     def __len__(self):
         return len(self.text)
@@ -113,11 +109,7 @@ class CompoundRichText(RichText):
 
 class Prompt(RichText):
     def __str__(self):
-        if isinstance(self.text, str):
-            text = self.text.encode(sys.getfilesystemencoding())
-        else:
-            text = self.text
-        return '\x1b[%sm%s>\x1b[0m ' % (self.mode, text)
+        return '\x1b[%sm%s>\x1b[0m ' % (self.mode, self.text)
 
     def __len__(self):
         return len(self.text)+2
@@ -368,7 +360,7 @@ class UI(Thread, metaclass=Singleton):
                 # calculate the new position of the prompt
                 self.prompt_y += text_lines - auto_scroll_amount
                 # we might need to scroll up to make the prompt position visible again
-                scroll_up = self.prompt_y - window_height
+                scroll_up = int(self.prompt_y - window_height)
                 if scroll_up > 0:
                     self.prompt_y -= scroll_up
                     self._scroll_up(scroll_up)
@@ -397,8 +389,8 @@ class UI(Thread, metaclass=Singleton):
     @property
     def window_size(self):
         class WindowSize(tuple):
-            def __init__(ws_self, xxx_todo_changeme):
-                (y, x) = xxx_todo_changeme
+            def __init__(ws_self, dimensions):
+                (y, x) = dimensions
                 ws_self.x = x
                 ws_self.y = y if self.status is None else y-1
         return WindowSize(struct.unpack('HHHH', fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))[:2])
@@ -420,8 +412,6 @@ class UI(Thread, metaclass=Singleton):
     @run_in_ui_thread
     def _set_status(self, status):
         with self.lock:
-            if isinstance(status, str):
-                status = status.encode(sys.getfilesystemencoding())
             try:
                 old_status = self.__dict__['status']
             except KeyError:
@@ -516,7 +506,7 @@ class UI(Thread, metaclass=Singleton):
             text_len = len(question) + 2
             # calculate how much we need to scroll up
             text_lines = (text_len-1)/window_size.x + 1
-            scroll_up = text_lines - (window_size.y - self.prompt_y + 1)
+            scroll_up = int(text_lines - (window_size.y - self.prompt_y + 1))
             if scroll_up > 0:
                 self._scroll_up(scroll_up)
                 self.prompt_y -= scroll_up
@@ -544,7 +534,7 @@ class UI(Thread, metaclass=Singleton):
                 text_len += 1
             # calculate how much we need to scroll up
             text_lines = (text_len-1)/window_size.x + 1
-            scroll_up = text_lines - (window_size.y - self.prompt_y + 1)
+            scroll_up = int(text_lines - (window_size.y - self.prompt_y + 1))
             if scroll_up > 0:
                 self._scroll_up(scroll_up)
                 self.prompt_y -= scroll_up
@@ -563,7 +553,7 @@ class UI(Thread, metaclass=Singleton):
             cursor_position = len(self.prompt) + self.input.cursor_position + 1
             self.cursor_y = (cursor_position-1)/window_size.x + self.prompt_y # no need to add 1 since we had to subtract 1
             self.cursor_x = (cursor_position-1)%window_size.x + 1
-            self._raw_write('\x1b[%d;%dH' % (self.cursor_y, self.cursor_x))
+            #self._raw_write('\x1b[%d;%dH' % (self.cursor_y, self.cursor_x))
 
     def _draw_status(self):
         status = self.status
@@ -584,7 +574,7 @@ class UI(Thread, metaclass=Singleton):
 
     def _scroll_up(self, lines):
         window_height = struct.unpack('HHHH', fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))[0]
-        self._raw_write('\x1b[s\x1b[%d;1H' % int(window_height) + '\x1bD' * int(lines) + '\x1b[u')
+        self._raw_write('\x1b[s\x1b[%d;1H' % window_height + '\x1bD' * int(lines) + '\x1b[u')
 
     # control character handlers
     #
@@ -626,7 +616,7 @@ class UI(Thread, metaclass=Singleton):
                     self.prompt_y += text_lines
                     # we need to scroll if the new prompt position is below the window margin, otherwise
                     # some text might go over it
-                    scroll_up = self.prompt_y - window_size.y
+                    scroll_up = int(self.prompt_y - window_size.y)
                     if scroll_up > 0:
                         self.prompt_y -= scroll_up
                         self._scroll_up(scroll_up)
@@ -640,7 +630,7 @@ class UI(Thread, metaclass=Singleton):
                     self.prompt_y += text_lines
                     # we need to scroll if the new prompt position is below the window margin, otherwise
                     # some text might go over it
-                    scroll_up = self.prompt_y - window_size.y
+                    scroll_up = int(self.prompt_y - window_size.y)
                     if scroll_up > 0:
                         self.prompt_y -= scroll_up
                         self._scroll_up(scroll_up)
