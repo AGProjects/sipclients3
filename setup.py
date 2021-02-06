@@ -27,7 +27,7 @@ setup(
     ],
 
     packages=['sipclient', 'sipclient.configuration'],
-    data_files=[('share/sipclients/sounds', glob.glob(os.path.join('resources', 'sounds', '*.wav')))],
+    data_files=[('share/sipclients/sounds', glob.glob(os.path.join('resources', 'sounds', '*.wav'))), ('share/sipclients/tls', ['resources/tls/ca.crt', 'resources/tls/default.crt'])],
     scripts=[
         'sip-audio-session',
         'sip-message',
