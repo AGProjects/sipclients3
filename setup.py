@@ -27,18 +27,18 @@ setup(
     ],
 
     packages=['sipclient', 'sipclient.configuration'],
-    data_files=[('share/sipclients/sounds', glob.glob(os.path.join('resources', 'sounds', '*.wav'))), ('share/sipclients/tls', ['resources/tls/ca.crt', 'resources/tls/default.crt'])],
+    data_files=[('share/sipclients3/sounds', glob.glob(os.path.join('resources', 'sounds', '*.wav'))), ('share/sipclients3/tls', ['resources/tls/ca.crt', 'resources/tls/default.crt'])],
     scripts=[
-        'sip-audio-session',
-        'sip-message',
-        'sip-publish-presence',
-        'sip-register',
-        'sip-session',
-        'sip-settings',
-        'sip-subscribe-mwi',
-        'sip-subscribe-presence',
-        'sip-subscribe-rls',
-        'sip-subscribe-winfo',
-        'sip-subscribe-xcap-diff'
+        'sip-audio-session3',
+        'sip-message3',
+        'sip-publish-presence3',
+        'sip-register3',
+        'sip-session3',
+        'sip-settings3',
+        'sip-subscribe-mwi3',
+        'sip-subscribe-presence3',
+        'sip-subscribe-rls3',
+        'sip-subscribe-winfo3',
+        'sip-subscribe-xcap-diff3'
     ]
 )
