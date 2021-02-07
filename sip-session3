@@ -948,7 +948,8 @@ class OutgoingTransferHandler(object):
         notification.center.add_observer(self, sender=self.session)
         notification.center.add_observer(self, sender=self.stream)
         notification.center.add_observer(self, sender=self.handler)
-        self.session.connect(ToHeader(self.target), routes=notification.data.result, streams=[self.stream])
+        routes = notification.data.result
+        self.session.connect(ToHeader(self.target), routes=routes, streams=[self.stream])
 
     def _NH_DNSLookupDidFail(self, notification):
         notification.center.remove_observer(self, sender=notification.sender)
@@ -990,6 +991,15 @@ class OutgoingTransferHandler(object):
         if session.remote_identity.display_name:
             identity = '"%s" <%s>' % (session.remote_identity.display_name, identity)
         show_notice("File transfer for %s to '%s' started" % (os.path.basename(self.filepath), identity))
+
+    def _NH_FileTransferHandlerHashProgress(self, notification):
+        progress = int(notification.data.processed*100/notification.data.total)
+        if progress % 10 == 0:
+            ui = UI()
+            if progress < 100:
+                ui.status = 'Calculating checksum for %s: %s%%' % (self.filepath, progress)
+            else:
+                ui.status = 'Sending file transfer request...'
 
     def _NH_MediaStreamDidNotInitialize(self, notification):
         self._terminate(failure_reason=notification.data.reason)
