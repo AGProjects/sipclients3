@@ -268,7 +268,7 @@ class UI(Thread, metaclass=Singleton):
 
     def start(self, prompt='', command_sequence='/', control_char='\x18', control_bindings={}, display_commands=True, display_text=True):
         with self.lock:
-            if self.isAlive():
+            if self.is_alive():
                 raise RuntimeError('UI already active')
             if not sys.stdin.isatty():
                 raise RuntimeError('UI cannot be used on a non-TTY')
