@@ -41,7 +41,7 @@ class ResourcePath(object):
         from sipsimple.configuration.settings import SIPSimpleSettings
         settings = SIPSimpleSettings()
         if os.path.basename(binary_directory) == 'bin':
-            resources_component = settings.resources_directory or 'share/sipclients'
+            resources_component = settings.resources_directory or 'share/sipclients3'
         else:
             resources_component = settings.resources_directory or 'resources'
         return os.path.realpath(os.path.join(application_directory, resources_component))
