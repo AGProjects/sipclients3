@@ -2655,6 +2655,7 @@ class SIPSessionApplication(SIPApplication):
             return
             
         audio_stream.encryption.zrtp.verified = not audio_stream.encryption.zrtp.verified
+        show_notice("ZRTP peer is now %s" % ('verified' if audio_stream.encryption.zrtp.verified  else 'not verified'))
 
     def _CH_zrtp_name(self, *args):
         if self.active_session is None:
@@ -2669,7 +2670,7 @@ class SIPSessionApplication(SIPApplication):
             
         peer_name = " ".join(args) if args else None
         audio_stream.encryption.zrtp.peer_name = peer_name
-        
+        show_notice("ZRTP peer name is now %s" % audio_stream.encryption.zrtp.peer_name)
 
     def _CH_hold(self, state='toggle'):
         if self.active_session is not None:
