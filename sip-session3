@@ -1219,6 +1219,7 @@ class SIPSessionApplication(SIPApplication):
         self.smp_verification_delay = 0
         self.smp_verification_tries = 5
         self.smp_secret = None
+        self.must_exit = False
 
     def start(self, target, options, filepath=None):
         notification_center = NotificationCenter()
@@ -1244,6 +1245,9 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidSucceed')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidFail')
         notification_center.add_observer(self, name='SIPEngineGotMessage')
+        notification_center.add_observer(self, name='SIPSessionDidEnd')
+        notification_center.add_observer(self, name='SIPSessionDidFail')
+        notification_center.add_observer(self, name='MediaStreamDidNotInitialize')
 
         log.level.current = log.level.WARNING # get rid of twisted messages
         control_bindings={'s': 'trace sip',
@@ -1367,6 +1371,7 @@ class SIPSessionApplication(SIPApplication):
         if self.target is not None:
             if self.filepath:
                 self.send_outgoing_file(self.target, self.filepath)
+                self.must_exit = True
             else:            
                 call_initializer = OutgoingCallInitializer(self.account, self.target, audio=True, chat=True, video=True)
                 call_initializer.start()
@@ -1739,6 +1744,9 @@ class SIPSessionApplication(SIPApplication):
         if not on_hold_streams and self.hold_tone is not None:
             self.hold_tone.stop()
             self.hold_tone = None
+    
+        if self.must_exit:
+            self.stop()  
 
     def _NH_SIPSessionDidChangeHoldState(self, notification):
         session = notification.sender
@@ -1983,6 +1991,18 @@ class SIPSessionApplication(SIPApplication):
     def _NH_WavePlayerDidEnd(self, notification):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
+
+    def _NH_MediaStreamDidNotInitialize(self, notification):
+        if self.must_exit:
+            self.stop()
+
+    def _NH_SIPSessionDidFail(self, notification):
+        if self.must_exit:
+            self.stop()
+
+    def _NH_SIPSessionDidEnd(self, notification):
+        if self.must_exit:
+            self.stop()
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
         show_notice(" ")
