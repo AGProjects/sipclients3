@@ -2032,7 +2032,7 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_RTPStreamICENegotiationDidFail(self, notification):
         show_notice("\n")
-        show_notice("ICE negotiation failed: %s" % notification.data.reason)
+        show_notice("ICE negotiation failed: %s" % notification.data.reason.decode())
 
     # command handlers
     #

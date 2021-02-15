@@ -1146,7 +1146,7 @@ class SIPAudioApplication(SIPApplication):
         self.output.put("ICE negotiation succeeded in %s\n" % notification.data.duration)
 
     def _NH_RTPStreamICENegotiationDidFail(self, notification):
-        self.output.put("ICE negotiation failed: %s\n" % notification.data.reason)
+        self.output.put("ICE negotiation failed: %s\n" % notification.data.reason.decode())
 
     def _print_new_session(self):
         session = self.incoming_sessions[0]
