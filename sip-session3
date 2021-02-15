@@ -1248,6 +1248,7 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='SIPSessionDidEnd')
         notification_center.add_observer(self, name='SIPSessionDidFail')
         notification_center.add_observer(self, name='MediaStreamDidNotInitialize')
+        notification_center.add_observer(self, name='SIPSessionGotConferenceInfo')
 
         log.level.current = log.level.WARNING # get rid of twisted messages
         control_bindings={'s': 'trace sip',
@@ -1995,6 +1996,13 @@ class SIPSessionApplication(SIPApplication):
     def _NH_MediaStreamDidNotInitialize(self, notification):
         if self.must_exit:
             self.stop()
+
+    def _NH_SIPSessionGotConferenceInfo(self, notification):
+        info = notification.data.conference_info
+        show_notice('Conference users: %s' % ", ".join(user.entity.split(":")[1] for user in info.users))
+        if info.conference_description.resources:
+            for file in info.conference_description.resources.files:
+                show_notice('Conference shared file: %s (%s bytes)' % (file.name, file.size))    
 
     def _NH_SIPSessionDidFail(self, notification):
         if self.must_exit:

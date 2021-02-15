@@ -212,7 +212,8 @@ class SIPAudioApplication(SIPApplication):
         notification_center.add_observer(self, name='RTPStreamDidChangeRTPParameters')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidSucceed')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidFail')
-
+        notification_center.add_observer(self, name='SIPSessionGotConferenceInfo')
+        
         if self.input:
             self.input.start()
         self.output.start()
@@ -1062,6 +1063,13 @@ class SIPAudioApplication(SIPApplication):
         notification_center.add_observer(self, sender=wave_player)
         self.voice_audio_bridge.add(wave_player)
         wave_player.start()
+
+    def _NH_SIPSessionGotConferenceInfo(self, notification):
+        info = notification.data.conference_info
+        self.output.put('Conference users: %s\n' % ", ".join(user.entity.split(":")[1] for user in info.users))
+        if info.conference_description.resources:
+            for file in info.conference_description.resources.files:
+                self.output.put('Conference shared file: %s (%s bytes)\n' % (file.name, file.size))
 
     def _NH_RTPStreamDidChangeHoldState(self, notification):
         if notification.data.on_hold:
