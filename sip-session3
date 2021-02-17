@@ -1249,7 +1249,10 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='SIPSessionDidFail')
         notification_center.add_observer(self, name='MediaStreamDidNotInitialize')
         notification_center.add_observer(self, name='SIPSessionGotConferenceInfo')
-
+        notification_center.add_observer(self, name='SIPSessionTransferGotProgress')
+        notification_center.add_observer(self, name='SIPSessionTransferDidFail')
+        notification_center.add_observer(self, name='SIPSessionTransferNewIncoming')
+        
         log.level.current = log.level.WARNING # get rid of twisted messages
         control_bindings={'s': 'trace sip',
                           'm': 'trace msrp',
@@ -1447,6 +1450,30 @@ class SIPSessionApplication(SIPApplication):
             self.message_sessions.add(message_session)
         
         return message_session
+
+    def _NH_SIPSessionTransferNewIncoming(self, notification):
+        target = "%s@%s" % (notification.data.transfer_destination.user.decode(), notification.data.transfer_destination.host.decode())
+        show_notice('Session transfer requested by remote party to: %s' % target)
+        self.question = Question("Call transfer request to %s, do you want to accept? (a)ccept/(r)eject" % target, 'arbi', bold=True)
+        notification_center = NotificationCenter()
+        notification_center.add_observer(self, sender=self.question)
+        ui = UI()
+        ui.add_question(self.question)
+
+    def _NH_UIQuestionGotAnswer(self, notification):
+        notification_center = NotificationCenter()
+        ui = UI()
+        notification_center.remove_observer(self, sender=notification.sender)
+        answer = notification.data.answer
+        self.question = None
+        if answer == 'a':
+            if self.active_session:
+                ui.status = 'Accepting transfer...'
+                self.active_session.accept_transfer()
+        elif answer == 'r':
+            if self.active_session:
+                ui.status = 'Rejecting transfer...'
+                self.active_session.accept_transfer()
 
     def _NH_SIPEngineGotException(self, notification):
         lines = ['An exception occured within the SIP core:']
@@ -1999,6 +2026,12 @@ class SIPSessionApplication(SIPApplication):
     def _NH_MediaStreamDidNotInitialize(self, notification):
         if self.must_exit:
             self.stop()
+
+    def _NH_SIPSessionTransferGotProgress(self, notification):
+        show_notice('Session transfer progress: %s (%s)' % (notification.data.reason, notification.data.code))
+
+    def _NH_SIPSessionTransferDidFail(self, notification):
+        show_notice('Session transfer failed: %s (%s)' % (notification.data.reason, notification.data.code))
 
     def _NH_SIPSessionGotConferenceInfo(self, notification):
         info = notification.data.conference_info
@@ -2770,6 +2803,10 @@ class SIPSessionApplication(SIPApplication):
             return
         if re.match('^(sip:|sips:)', uri) is None:
             uri = 'sip:%s' % uri
+            
+        if '@' not in uri:
+            uri = '%s@%s' % (uri, self.account.id.domain)
+
         try:
             uri = SIPURI.parse(uri)
         except SIPCoreError:
