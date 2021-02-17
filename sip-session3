@@ -1650,6 +1650,9 @@ class SIPSessionApplication(SIPApplication):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
 
+        if self.must_exit:
+            self.stop()
+
     def _NH_SIPSessionWillStart(self, notification):
         notification_center = NotificationCenter()
         for stream in notification.sender.proposed_streams:
@@ -2003,14 +2006,6 @@ class SIPSessionApplication(SIPApplication):
         if info.conference_description.resources:
             for file in info.conference_description.resources.files:
                 show_notice('Conference shared file: %s (%s bytes)' % (file.name, file.size))    
-
-    def _NH_SIPSessionDidFail(self, notification):
-        if self.must_exit:
-            self.stop()
-
-    def _NH_SIPSessionDidEnd(self, notification):
-        if self.must_exit:
-            self.stop()
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
         show_notice(" ")
