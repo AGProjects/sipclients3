@@ -191,12 +191,10 @@ class MessageSession(object):
         handler(notification)
 
     def inject_otr_message(self, data):
-        if self.encryption.active:
-            show_notice('Request start of OTR encryption')
-        else:
-            show_notice('Requesting stop of OTR encryption')
+        if not self.encryption.active:
+            show_notice('Starting OTR encryption')
         messageObject = OTRInternalMessage(data)
-        self.message_queue.put(messageObject)
+        self.send_message(messageObject)
 
     def _NH_DNSLookupDidSucceed(self, notification):
         self.notification_center.remove_observer(self, sender=notification.sender)
@@ -217,14 +215,18 @@ class MessageSession(object):
         show_notice('%s Session to %s failed: DNS lookup failed' % (datetime.now().replace(microsecond=0), self.remote_uri))
         self.message_queue.stop()
         
-    def send_message(self, text):
+    def send_message(self, message):
         if not self.routes:
             self.start()
 
         self.msg_id = self.msg_id + 1
-        messageObject = QueuedMessage(self.msg_id , text)
 
-        self.message_queue.put(messageObject)
+        if not isinstance(message, OTRInternalMessage):
+            messageObject = QueuedMessage(self.msg_id , message)
+            self.message_queue.put(messageObject)
+        else:
+            self.message_queue.put(message)
+
         return self.msg_id 
         
     def _send_message(self, message):
