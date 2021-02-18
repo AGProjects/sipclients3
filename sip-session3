@@ -191,7 +191,10 @@ class MessageSession(object):
         handler(notification)
 
     def inject_otr_message(self, data):
-        show_notice('Requesting %s of OTR encryption...' % 'stop' if self.encryption.active else 'start')
+        if self.encryption.active:
+            show_notice('Request start of OTR encryption')
+        else:
+            show_notice('Requesting stop of OTR encryption')
         messageObject = OTRInternalMessage(data)
         self.message_queue.put(messageObject)
 
