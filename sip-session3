@@ -508,17 +508,21 @@ class OutgoingCallInitializer(object):
         application.outgoing_session = None
 
         for stream in notification.data.streams:
-            if stream.type == 'audio':
-                show_notice('Audio session established using "%s" codec at %sHz' % (stream.codec.decode(), stream.sample_rate))
+            if stream.type in ('audio', 'video'):
+                show_notice('%s session established using %s codec at %sHz' % (stream.type.title(), stream.codec.decode().capitalize(), stream.sample_rate))
                 if stream.ice_active:
-                    show_notice('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)' % (stream.local_rtp_address.decode(),
-                                                                                                     stream.local_rtp_port,
-                                                                                                     stream.local_rtp_candidate.type.lower(),
-                                                                                                     stream.remote_rtp_address,
-                                                                                                     stream.remote_rtp_port,
-                                                                                                     stream.remote_rtp_candidate.type.lower()))
+                    show_notice('%s RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)' % (stream.type.title(), 
+                                                                                                  stream.local_rtp_address.decode(),
+                                                                                                  stream.local_rtp_port,
+                                                                                                  stream.local_rtp_candidate.type.lower(),
+                                                                                                  stream.remote_rtp_address.decode(),
+                                                                                                  stream.remote_rtp_port,
+                                                                                                  stream.remote_rtp_candidate.type.lower()
+                                                                                                  )
+                                                                                                  )
                 else:
-                    show_notice('Audio RTP endpoints %s:%d <-> %s:%d' % (stream.local_rtp_address, stream.local_rtp_port, stream.remote_rtp_address, stream.remote_rtp_port))
+                    show_notice('%s RTP endpoints %s:%d <-> %s:%d' % (stream.type.title(), stream.local_rtp_address.decode(), stream.local_rtp_port, stream.remote_rtp_address.decode(), stream.remote_rtp_port))
+
                 
         if session.remote_user_agent is not None:
             show_notice('Remote SIP User Agent is "%s"' % session.remote_user_agent)
@@ -653,15 +657,27 @@ class IncomingCallInitializer(object):
         if session.remote_identity.display_name:
             identity = '"%s" <%s>' % (session.remote_identity.display_name, identity)
         show_notice("SIP session with %s established" % identity)
+
         for stream in notification.data.streams:
-            if stream.type == 'audio':
-                show_notice('Audio stream using "%s" codec at %sHz' % (stream.codec, stream.sample_rate))
+            if stream.type in ('audio', 'video'):
+                show_notice('%s stream using %s codec at %sHz' % (stream.type.title(), stream.codec.decode().capitalize(), stream.sample_rate))
+                
                 if stream.ice_active:
-                    show_notice('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)' % (stream.local_rtp_address, stream.local_rtp_port, stream.local_rtp_candidate_type, stream.remote_rtp_address, stream.remote_rtp_port, stream.remote_rtp_candidate_type))
+                    show_notice('%s RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.type.title(), stream.local_rtp_address.decode(),
+                                                                                                        stream.local_rtp_port,
+                                                                                                        stream.local_rtp_candidate.type.lower(),
+                                                                                                        stream.remote_rtp_address,
+                                                                                                        stream.remote_rtp_port,
+                                                                                                        stream.remote_rtp_candidate.type.lower()))
                 else:
-                    show_notice('Audio RTP endpoints %s:%d <-> %s:%d' % (stream.local_rtp_address, stream.local_rtp_port, stream.remote_rtp_address, stream.remote_rtp_port))
+                    show_notice('%s RTP endpoints %s:%d <-> %s:%d\n' % (stream.type.title(), 
+                                                                               stream.local_rtp_address.decode(), 
+                                                                               stream.local_rtp_port, 
+                                                                               stream.remote_rtp_address.decode(), 
+                                                                               stream.remote_rtp_port))
+
                 if stream.encryption.active:
-                    show_notice('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher))
+                    show_notice('%s RTP stream is encrypted using %s (%s)\n' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
         if session.remote_user_agent is not None:
             show_notice('Remote SIP User Agent is "%s"' % session.remote_user_agent)
 
@@ -1252,7 +1268,10 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='SIPSessionTransferGotProgress')
         notification_center.add_observer(self, name='SIPSessionTransferDidFail')
         notification_center.add_observer(self, name='SIPSessionTransferNewIncoming')
-        
+        notification_center.add_observer(self, name='RTPStreamICENegotiationStateDidChange')
+        notification_center.add_observer(self, name='RTPStreamICENegotiationDidFail')
+        notification_center.add_observer(self, name='RTPStreamICENegotiationDidSucceed')
+
         log.level.current = log.level.WARNING # get rid of twisted messages
         control_bindings={'s': 'trace sip',
                           'm': 'trace msrp',
@@ -1403,6 +1422,41 @@ class SIPSessionApplication(SIPApplication):
                 show_notice('Illegal use of command /%s. Type /help for a list of available commands.' % notification.data.command)
         else:
             show_notice('Unknown command /%s. Type /help for a list of available commands.' % notification.data.command)
+
+    def _NH_RTPStreamICENegotiationStateDidChange(self, notification):
+        data = notification.data
+        if data.state == 'GATHERING':
+            show_notice("Gathering ICE Candidates...")
+        elif data.state == 'NEGOTIATION_START':
+            show_notice("Connecting...")
+        elif data.state == 'NEGOTIATING':
+            show_notice("Negotiating ICE...")
+        elif data.state == 'GATHERING_COMPLETE':
+            show_notice("Gathering Complete")
+        elif data.state == 'RUNNING':
+            show_notice("ICE Negotiation Succeeded")
+        elif data.state == 'FAILED':
+            show_notice("ICE Negotiation Failed", True)
+
+    def _NH_RTPStreamICENegotiationDidFail(self, notification):
+        stream = notification.sender
+        show_notice('%s ICE negotiation failed: %s' % (notification.sender.type, notification.data.reason))
+
+    def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
+        stream = notification.sender
+        show_notice('%s ICE negotiation succeeded' % stream.type)
+        show_notice('%s RTP endpoints: %s:%d (%s) <-> %s:%d (%s)' % (stream.type, stream.local_rtp_address,
+                                                                        stream.local_rtp_port,
+                                                                        self.stream.local_rtp_candidate.type.lower(),
+                                                                        stream.remote_rtp_address,
+                                                                        stream.remote_rtp_port,
+                                                                        stream.remote_rtp_candidate.type.lower()))
+
+        if stream.local_rtp_candidate.type.lower() != 'relay' and stream.remote_rtp_candidate.type.lower() != 'relay':
+            show_notice('%s stream is peer to peer' % stream.type)
+        else:
+            show_notice('%s stream is relayed by server' % stream.type)
+
 
     def _NH_UIInputGotText(self, notification):
         msrp_chat = None

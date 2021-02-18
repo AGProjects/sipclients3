@@ -212,6 +212,7 @@ class SIPAudioApplication(SIPApplication):
         notification_center.add_observer(self, name='RTPStreamDidChangeRTPParameters')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidSucceed')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidFail')
+        notification_center.add_observer(self, name='RTPStreamICENegotiationStateDidChange')
         notification_center.add_observer(self, name='SIPSessionGotConferenceInfo')
         
         if self.input:
@@ -833,41 +834,26 @@ class SIPAudioApplication(SIPApplication):
         if session.remote_user_agent is not None:
             self.output.put('Remote SIP User Agent is "%s"\n' % session.remote_user_agent)
 
-        stream = notification.data.streams[0]
-        
-        if stream.type == 'audio':
-            self.output.put('Audio stream established using %s codec at %sHz\n' % (stream.codec.decode().capitalize(), stream.sample_rate))
+        for stream in notification.data.streams:
+            if stream.type in ('audio', 'video'):
+                self.output.put('%s stream established using %s codec at %sHz\n' % (stream.type.title(), stream.codec.decode().capitalize(), stream.sample_rate))
 
-            if stream.ice_active:
-                self.output.put('Audio RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.local_rtp_address.decode(),
-                                                                                                       stream.local_rtp_port,
-                                                                                                       stream.local_rtp_candidate.type.lower(),
-                                                                                                       stream.remote_rtp_address,
-                                                                                                       stream.remote_rtp_port,
-                                                                                                       stream.remote_rtp_candidate.type.lower()))
-            else:
-                self.output.put('Audio RTP endpoints %s:%d <-> %s:%d\n' % (stream.local_rtp_address.decode(), stream.local_rtp_port, stream.remote_rtp_address.decode(), stream.remote_rtp_port))
-            if stream.encryption.active:
-                self.output.put('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher))
-
-        try:
-            video_stream = notification.data.streams[1]
-        except IndexError:
-            video_stream = None
-        else:
-            if video_stream.type == 'video':
-                self.output.put('Video stream established using %s codec at %sHz\n' % (video_stream.codec.decode(), video_stream.sample_rate))
-                if video_stream.ice_active:
-                    self.output.put('Video RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (video_stream.local_rtp_address.decode(),
-                                                                                                           video_stream.local_rtp_port,
-                                                                                                           video_stream.local_rtp_candidate.type.lower(),
-                                                                                                           video_stream.remote_rtp_address,
-                                                                                                           video_stream.remote_rtp_port,
-                                                                                                           video_stream.remote_rtp_candidate.type.lower()))
+                if stream.ice_active:
+                    self.output.put('%s RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.type.title(), stream.local_rtp_address.decode(),
+                                                                                                        stream.local_rtp_port,
+                                                                                                        stream.local_rtp_candidate.type.lower(),
+                                                                                                        stream.remote_rtp_address,
+                                                                                                        stream.remote_rtp_port,
+                                                                                                        stream.remote_rtp_candidate.type.lower()))
                 else:
-                    self.output.put('Video RTP endpoints %s:%d <-> %s:%d\n' % (video_stream.local_rtp_address.decode(), video_stream.local_rtp_port, video_stream.remote_rtp_address.decode(), video_stream.remote_rtp_port))
-                if video_stream.encryption.active:
-                    self.output.put('RTP video stream is encrypted using %s (%s)\n' % (video_stream.encryption.type, video_stream.encryption.cipher))
+                    self.output.put('%s RTP endpoints %s:%d <-> %s:%d\n' % (stream.type.title(), 
+                                                                               stream.local_rtp_address.decode(), 
+                                                                               stream.local_rtp_port, 
+                                                                               stream.remote_rtp_address.decode(), 
+                                                                               stream.remote_rtp_port))
+                if stream.encryption.active:
+                    self.output.put('%s stream is encrypted using %s (%s)\n' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
+
             
         self.started_sessions.append(session)
         if self.active_session is not None:
@@ -1071,6 +1057,40 @@ class SIPAudioApplication(SIPApplication):
             for file in info.conference_description.resources.files:
                 self.output.put('Conference shared file: %s (%s bytes)\n' % (file.name, file.size))
 
+    def _NH_RTPStreamICENegotiationStateDidChange(self, notification):
+        data = notification.data
+        if data.state == 'GATHERING':
+            self.output.put("Gathering ICE Candidates...\n")
+        elif data.state == 'NEGOTIATION_START':
+            self.output.put("Connecting...\n")
+        elif data.state == 'NEGOTIATING':
+            self.output.put("Negotiating ICE...\n")
+        elif data.state == 'GATHERING_COMPLETE':
+            self.output.put("Gathering Complete\n")
+        elif data.state == 'RUNNING':
+            self.output.put("ICE Negotiation Succeeded\n")
+        elif data.state == 'FAILED':
+            self.output.put("ICE Negotiation Failed\n", True)
+
+    def _NH_RTPStreamICENegotiationDidFail(self, notification):
+        stream = notification.sender
+        self.output.put('%s ICE negotiation failed: %s' % (notification.sender.type, notification.data.reason))
+
+    def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
+        stream = notification.sender
+        self.output.put('%s ICE negotiation succeeded\n' % stream.type)
+        self.output.put('%s RTP endpoints: %s:%d (%s) <-> %s:%d (%s)\n' % (stream.type, stream.local_rtp_address,
+                                                                        stream.local_rtp_port,
+                                                                        self.stream.local_rtp_candidate.type.lower(),
+                                                                        stream.remote_rtp_address,
+                                                                        stream.remote_rtp_port,
+                                                                        stream.remote_rtp_candidate.type.lower()))
+
+        if stream.local_rtp_candidate.type.lower() != 'relay' and stream.remote_rtp_candidate.type.lower() != 'relay':
+            self.output.put('%s stream is peer to peer\n' % stream.type)
+        else:
+            self.output.put('%s stream is relayed by server\n' % stream.type)
+            
     def _NH_RTPStreamDidChangeHoldState(self, notification):
         if notification.data.on_hold:
             if not self.hold_tone.is_active:
