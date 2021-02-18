@@ -387,8 +387,12 @@ class MessageSession(object):
         if message.id in (None, 'OTR'):
             return
 
-        server = notification.data.headers.get('Server', Null).body
-        client = notification.data.headers.get('Client', Null).body
+        if hasattr(notification.data, 'headers'):
+            server = notification.data.headers.get('Server', Null).body
+            client = notification.data.headers.get('Client', Null).body
+        else:
+            server = 'local'
+            client = 'local'
 
         if notification.data.code == 408 and self.routes:
             pass
