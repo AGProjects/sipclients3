@@ -295,7 +295,7 @@ class MessageSession(object):
 
     def handle_incoming(self, from_header, content_type, data):
         self.msg_id = self.msg_id + 1
-
+        
         if content_type == 'message/cpim':
             try:
                 payload = CPIMPayload.decode(content)
@@ -305,7 +305,7 @@ class MessageSession(object):
             else:
 
                 if payload.sender:
-                    identity = '%s@%s' % (payload.sender.uri.user, payload.sender.uri.host)
+                    identity = '%s@%s' % (payload.sender.uri.user.decode(), payload.sender.uri.host.decode())
                     if from_header.uri == cpim_message.sender.uri:
                         if payload.sender.display_name:
                             identity = '"%s" <%s>' % (payload.sender.display_name, identity)
@@ -313,11 +313,11 @@ class MessageSession(object):
                             identity = '"%s" <%s>' % (from_header.display_name, identity)
                 else:
                     identity = from_header
-                
+            
         else:
             payload = SimplePayload.decode(data, content_type)
             from_header = FromHeader.new(from_header)
-            identity = '%s@%s' % (str(from_header.uri.user), str(from_header.uri.host))
+            identity = '%s@%s' % (from_header.uri.user.decode(), from_header.uri.host.decode())
 
         content = payload.content
         content_type = payload.content_type
@@ -1641,12 +1641,13 @@ class SIPSessionApplication(SIPApplication):
         is_composing = False
 
         from_header = FromHeader.new(data.from_header)
-        identity = '%s@%s' % (str(from_header.uri.user), str(from_header.uri.host))
+        identity = '%s@%s' % (from_header.uri.user.decode(), from_header.uri.host.decode())
         message_session = self.message_session(identity)
         parsed_payload = message_session.handle_incoming(data.from_header, content_type, data.body)
 
         if parsed_payload is None:
             return
+            
         
         (content_type, content, identity, msg_id, encrypted) = parsed_payload            
         if content_type == 'application/im-iscomposing+xml':
@@ -1672,16 +1673,17 @@ class SIPSessionApplication(SIPApplication):
             is_composing = True
 
         if content_type != 'application/im-iscomposing+xml':
-            if self.message_session_to != identity:
-                 show_notice('Message session started with %s' % identity)
-
             self.message_session_to = identity
 
         if from_header.display_name:
             identity = '"%s" <%s>' % (from_header.display_name, identity)
+            
+        content = content.decode()
     
         if is_composing:
-            show_notice("%s %s is composing a message" % (datetime.now().replace(microsecond=0), identity))
+            ui = UI()
+            ui.status = "%s is composing a message" % identity
+            reactor.callLater(2, setattr, ui, 'status', None)
         else:
             if encrypted:
                 show_notice("%s %s wrote: %s (%s encrypted)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
@@ -1713,7 +1715,6 @@ class SIPSessionApplication(SIPApplication):
                 show_notice('Session from %s rejected due to incompatible media' % remote_identity)
                 session.reject(415)
                 return
-
 
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=session)
