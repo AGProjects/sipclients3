@@ -27,7 +27,7 @@ from eventlib import api
 from twisted.internet import reactor
 from zope.interface import implementer
 
-from otr import OTRSession, OTRTransport, OTRState, SMPStatus
+from otr import OTRTransport, OTRState, SMPStatus
 from otr.exceptions import IgnoreMessage, UnencryptedMessage, EncryptedMessageError, OTRError
 
 from sipsimple.core import Engine, FromHeader, Message, RouteHeader, SIPCoreError, SIPURI, ToHeader
@@ -37,6 +37,7 @@ from sipsimple.application import SIPApplication
 from sipsimple.audio import WavePlayer
 from sipsimple.configuration import ConfigurationError
 from sipsimple.configuration.settings import SIPSimpleSettings
+from sipsimple.core import Route
 from sipsimple.lookup import DNSLookup
 from sipsimple.payloads.iscomposing import IsComposingMessage
 from sipsimple.session import IllegalStateError, Session
@@ -121,7 +122,7 @@ class OTRInternalMessage(QueuedMessage):
 @implementer(IObserver)
 class MessageSession(object):
     
-    def __init__(self, account, target, use_cpim=False):
+    def __init__(self, account, target, route=None, use_cpim=False):
         self.account = account
         self.target = target
         self.routes = None
@@ -131,6 +132,7 @@ class MessageSession(object):
         self.msg_map = {}
         self.route = None
         self.ended = False
+        self.route = route
 
         self.encryption = OTREncryption(self)
 
@@ -154,7 +156,10 @@ class MessageSession(object):
 
         self.notification_center = NotificationCenter()
 
-        show_notice('Message session started with %s' % self.target)
+        if self.route:
+            show_notice('Message session started with %s via %s' % (self.target, self.route))
+        else:
+            show_notice('Message session started with %s' % self.target)
 
     def end(self):
         show_notice('Ending message session to %s' % self.target)
@@ -168,6 +173,20 @@ class MessageSession(object):
 
     def start(self):
         if self.ended:
+            return
+            
+        if self.route:
+            self.routes = [self.route]
+            show_notice('%s Session to %s will start via %s' % (datetime.now().replace(microsecond=0), self.remote_uri, self.routes[0]))
+
+            if not self.started:
+                self.message_queue.start()
+        
+            if not self.encryption.active:
+                self.encryption.start()
+
+            self.started = True
+
             return
 
         lookup = DNSLookup()
@@ -201,13 +220,14 @@ class MessageSession(object):
 
         self.routes = notification.data.result
 
+        show_notice('%s Session to %s will start via %s' % (datetime.now().replace(microsecond=0), self.remote_uri, self.routes[0]))
+
         if not self.started:
             self.message_queue.start()
         
         if not self.encryption.active:
             self.encryption.start()
 
-        show_notice('%s Session to %s will start via %s' % (datetime.now().replace(microsecond=0), self.remote_uri, self.routes[0]))
         self.started = True
 
     def _NH_DNSLookupDidFail(self, notification):
@@ -405,9 +425,9 @@ class MessageSession(object):
             # TO DO retry
 
         if message.encrypted:
-            show_notice('%s Encrypted message %s to %s failed on %s: %s (%d)' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri, server or client, notification.data.reason, notification.data.code))
+            show_notice('%s Encrypted message %s to %s failed on %s: %s (%d)' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri, server or client, notification.data.reason.decode(), notification.data.code))
         else:
-            show_notice('%s Message %s to %s failed on %s: %s (%d)' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri,  server or client, notification.data.reason, notification.data.code))
+            show_notice('%s Message %s to %s failed on %s: %s (%d)' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri,  server or client, notification.data.reason.decode() if isinstance(notification.data.reason, bytes) else notification.data.reason, notification.data.code))
 
 
 OTRTransport.register(MessageSession)
@@ -1505,11 +1525,12 @@ class SIPSessionApplication(SIPApplication):
         ui = UI()
         ui.write(RichText('%s> ' % local_identity, foreground='darkred') + message_text)
 
-    def message_session(self, recipient):
+    def message_session(self, recipient, account=None, route=None):
+        account = account or self.account
         try:
-            message_session = next((session for session in self.message_sessions if session.target == recipient and self.account == session.account))
+            message_session = next((session for session in self.message_sessions if session.target == recipient and account == session.account))
         except StopIteration:
-            message_session = MessageSession(self.account, recipient)
+            message_session = MessageSession(account, recipient, route)
             self.message_sessions.add(message_session)
         
         return message_session
@@ -1646,18 +1667,26 @@ class SIPSessionApplication(SIPApplication):
             return
 
         account = AccountManager().find_account(data.request_uri)
-
         is_composing = False
 
         from_header = FromHeader.new(data.from_header)
+
         identity = '%s@%s' % (from_header.uri.user.decode(), from_header.uri.host.decode())
-        message_session = self.message_session(identity)
+        if isinstance(account, BonjourAccount):
+            via = data.headers.get('Via', Null)[0]
+            route = Route(address=via.host, port=via.port, transport=via.transport.lower())
+        else:
+            route = None
+
+        message_session = self.message_session(identity, account=account, route=route)
+
+        print('Got msg %s' % data.body)
+
         parsed_payload = message_session.handle_incoming(data.from_header, content_type, data.body)
 
         if parsed_payload is None:
             return
             
-        
         (content_type, content, identity, msg_id, encrypted) = parsed_payload            
         if content_type == 'application/im-iscomposing+xml':
             # body must not be utf-8 decoded
@@ -1688,12 +1717,13 @@ class SIPSessionApplication(SIPApplication):
             identity = '"%s" <%s>' % (from_header.display_name, identity)
             
         content = content.decode()
-    
+        
         if is_composing:
             ui = UI()
             ui.status = "%s is composing a message" % identity
             reactor.callLater(2, setattr, ui, 'status', None)
         else:
+
             if encrypted:
                 show_notice("%s %s wrote: %s (%s encrypted)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
             else:
@@ -2146,14 +2176,34 @@ class SIPSessionApplication(SIPApplication):
         call_initializer = OutgoingCallInitializer(self.account, target, audio=True, chat=chat_option=='+chat')
         call_initializer.start()
 
+    def _CH_m(self, target=None):
+        self._CH_message(target)
+
     def _CH_message(self, target=None):
         if not target:
             show_notice('Usage: /message user@domain')
-        
+                
+        route = None
+                
+        if isinstance(self.account, BonjourAccount):
+            try:
+                idx = int(target)
+                neighbour = list(self.neighbours.values())[idx-1]
+                show_notice('Using Bonjour neighbour "%s (%s)" <%s>' % (neighbour.display_name, neighbour.host, neighbour.uri))
+                target = str(neighbour.uri)
+                route = Route(address=neighbour.uri.host, port=neighbour.uri.port, transport=neighbour.uri.transport)
+            except (IndexError, TypeError):
+                i = 1
+                lines = ['Bonjour neighbours:']
+                for key, neighbour in self.neighbours.items():
+                    lines.append(' "%s (%s)" <%s> (%i)' % (neighbour.display_name, neighbour.host, neighbour.uri, i))
+                    i = i + 1
+                show_notice(lines)
+ 
         try:
             SIPURI.parse('sip:%s' % target)
             if self.message_session_to != target:
-                message_session = self.message_session(target)
+                message_session = self.message_session(target, route=route)
             self.message_session_to = target
         except SIPCoreError:
             show_notice('Invalid SIP URI %s' % target)
@@ -2220,6 +2270,9 @@ class SIPSessionApplication(SIPApplication):
             show_notice(lines)
         else:
             show_notice('There are no connected sessions')
+
+    def _CH_n(self):
+        self._CH_neighbours()
 
     def _CH_neighbours(self):
         if not isinstance(self.account, BonjourAccount):
@@ -2899,13 +2952,13 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /call {user[@domain]}: call the specified user using audio and chat')
         lines.append('  /audio {user[@domain]} [+chat]: call the specified user using audio and possibly chat')
         lines.append('  /chat {user[@domain]} [+audio]: call the specified user using chat and possibly audio')
-        lines.append('  /message {user[@domain]}: start a message session')
+        lines.append('  /[message | m] {user[@domain]}: start a message session')
         lines.append('  /send {user[@domain]} {file}: initiate a file transfer with the specified user')
         lines.append('  /next: select the next connected session')
         lines.append('  /prev: select the previous connected session')
         lines.append('  /sessions: show the list of connected sessions')
         if isinstance(self.account, BonjourAccount):
-            lines.append('  /neighbours: show the list of bonjour neighbours')
+            lines.append('  /[neighbours | n]: show the list of bonjour neighbours')
         lines.append('  /trace [[+|-]sip] [[+|-]msrp] [[+|-]pjsip] [[+|-]notifications]: toggle/set tracing on the console (ctrl-x s | ctrl-x m | ctrl-x j | ctrl-x n)')
         lines.append('  /rtp [on|off]: toggle/set printing RTP statistics and ICE negotiation results on the console (ctrl-x p)')
         lines.append('  /mute [on|off]: mute the microphone (ctrl-x u)')
