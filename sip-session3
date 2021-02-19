@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import binascii
 import os
 import re
 import signal
@@ -211,7 +210,8 @@ class MessageSession(object):
 
     def inject_otr_message(self, data):
         if not self.encryption.active:
-            show_notice('Starting OTR encryption')
+            ui = UI()
+            ui.status = 'Negotiating OTR encryption...'
         messageObject = OTRInternalMessage(data)
         self.send_message(messageObject)
 
@@ -1300,6 +1300,8 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='RTPStreamICENegotiationStateDidChange')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidFail')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidSucceed')
+        notification_center.add_observer(self, name='ChatStreamOTREncryptionStateChanged')
+        
 
         log.level.current = log.level.WARNING # get rid of twisted messages
         control_bindings={'s': 'trace sip',
@@ -1680,8 +1682,6 @@ class SIPSessionApplication(SIPApplication):
 
         message_session = self.message_session(identity, account=account, route=route)
 
-        print('Got msg %s' % data.body)
-
         parsed_payload = message_session.handle_incoming(data.from_header, content_type, data.body)
 
         if parsed_payload is None:
@@ -2008,7 +2008,7 @@ class SIPSessionApplication(SIPApplication):
                     self.smp_verifified_using_zrtp = True
             else:
                 show_notice("OTR verification requested by remote, reply using /otr_answer")
-                show_notice('OTR verification question: %s' % data.question)
+                show_notice('Question: %s' % data.question.decode())
                 self._update_prompt()
         else:
             try:
@@ -2051,16 +2051,19 @@ class SIPSessionApplication(SIPApplication):
         data = notification.data
         stream = notification.sender
         if data.new_state is OTRState.Encrypted:
-            local_fingerprint = binascii.hexlify(stream.encryption.key_fingerprint).upper()
-            remote_fingerprint = binascii.hexlify(stream.encryption.peer_fingerprint).upper()
+            local_fingerprint = stream.encryption.key_fingerprint
+            remote_fingerprint = stream.encryption.peer_fingerprint
             show_notice("Chat encryption activated using OTR protocol", bold=False)
             show_notice("OTR local fingerprint %s" % local_fingerprint, bold=False)
             show_notice("OTR remote fingerprint %s" % remote_fingerprint, bold=False)
 
+            ui = UI()
             if stream.encryption.verified:
-                show_notice("OTR remote fingerprint has been verified", bold=False)
+                ui.status = "OTR remote fingerprint has been verified"
             else:
-                show_notice("OTR remote fingerprint has not yet been verified", bold=False)
+                ui.status = "OTR remote fingerprint has not yet been verified"
+
+            reactor.callLater(5, setattr, ui, 'status', None)
 
         elif data.new_state is OTRState.Finished:
             show_notice("Chat encryption deactivated", bold=False)
@@ -2190,7 +2193,7 @@ class SIPSessionApplication(SIPApplication):
                 idx = int(target)
                 neighbour = list(self.neighbours.values())[idx-1]
                 show_notice('Using Bonjour neighbour "%s (%s)" <%s>' % (neighbour.display_name, neighbour.host, neighbour.uri))
-                target = str(neighbour.uri)
+                target = '%s@%s' % (neighbour.uri.user, neighbour.uri.host)
                 route = Route(address=neighbour.uri.host, port=neighbour.uri.port, transport=neighbour.uri.transport)
             except (IndexError, TypeError):
                 i = 1
@@ -2773,18 +2776,23 @@ class SIPSessionApplication(SIPApplication):
                 return
 
             message_session.encryption.smp_answer(answer)
-
-        chat_stream = next((stream for stream in self.active_session.streams if stream.type == 'chat'), None)
-        
-        if chat_stream is None:
-            show_notice("OTR functions can be used only during active chat sessions")
-            return
             
-        if answer:
-            chat_stream.encryption.smp_answer(answer)
+        else:
+            chat_stream = next((stream for stream in self.active_session.streams if stream.type == 'chat'), None)
+        
+            if chat_stream is None:
+                show_notice("OTR functions can be used only during active chat sessions")
+                return
+            
+            if answer:
+                chat_stream.encryption.smp_answer(answer)
 
     def _CH_otr_question(self, *args):
         question = " ".join(args) if args else None
+        
+        if self.smp_secret is None:
+            show_notice("OTR question can be asked only after secret has been set with /otr_secret")
+            return
 
         if self.active_session is None:
             message_session = self.message_session(self.message_session_to)
@@ -2794,7 +2802,7 @@ class SIPSessionApplication(SIPApplication):
                 return
 
             if question:
-                show_notice("OTR SMP verification question will be asked: %s" % question)
+                show_notice("OTR SMP verification question will be asked for message: %s" % question)
                 message_session.encryption.verified = False
                 message_session.encryption.smp_verify(self.smp_secret, question=question)
                 
@@ -2814,7 +2822,7 @@ class SIPSessionApplication(SIPApplication):
         if question:
             show_notice("OTR SMP verification question will be asked: %s" % question)
             chat_stream.encryption.verified = False
-            chat_stream.encryption.smp_verify(self.smp_secret, question=question)
+            chat_stream.encryption.smp_verify(self.smp_secret, question=question.encode())
 
     def _CH_zrtp_verified(self):
         if self.active_session is None:
