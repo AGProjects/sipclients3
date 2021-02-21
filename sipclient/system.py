@@ -1,12 +1,17 @@
 
 """System utilities used by the sipclient scripts"""
 
-__all__ = ['IPAddressMonitor']
+__all__ = ['IPAddressMonitor', 'copy_default_certificates']
+
+import os
+import shutil
 
 from application.notification import NotificationCenter, NotificationData
-from application.system import host
+from application.system import host, makedirs
 from eventlib import api
 
+from sipclient.configuration import config_directory
+from sipclient.configuration.datatypes import ResourcePath
 from sipsimple.threading import run_in_twisted_thread
 from sipsimple.threading.green import run_in_green_thread
 
@@ -48,3 +53,19 @@ class IPAddressMonitor(object):
             self.greenlet = None
 
 
+def copy_default_certificates():
+    default_tls_certificate = ResourcePath('tls/default.crt').normalized
+    local_tls_certificate = os.path.join(config_directory, 'tls/default.crt')
+
+    if not os.path.isfile(local_tls_certificate):
+        makedirs(os.path.join(config_directory, 'tls'))
+        shutil.copy(default_tls_certificate, local_tls_certificate)
+
+    default_tls_ca = ResourcePath('tls/ca.crt').normalized
+    local_tls_ca = os.path.join(config_directory, 'tls/ca.crt')
+
+    if not os.path.isfile(local_tls_ca):
+        makedirs(os.path.join(config_directory, 'tls'))
+        shutil.copy(default_tls_ca, local_tls_ca)
+
+        

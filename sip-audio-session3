@@ -40,7 +40,7 @@ from sipclient.configuration.account import AccountExtension
 from sipclient.configuration.datatypes import ResourcePath
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
-from sipclient.system import IPAddressMonitor
+from sipclient.system import IPAddressMonitor, copy_default_certificates
 
 
 class BonjourNeighbour(object):
@@ -371,6 +371,12 @@ class SIPAudioApplication(SIPApplication):
         self.voice_audio_bridge.add(self.tone_ringtone)
         self.hold_tone = WavePlayer(self.voice_audio_mixer, ResourcePath('sounds/hold_tone.wav').normalized, loop_count=0, pause_time=30, volume=50)
         self.voice_audio_bridge.add(self.hold_tone)
+
+        copy_default_certificates()
+
+        if self.account.tls.certificate is None:
+            self.account.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
+            self.account.save()
 
         if self.target is not None:
             if isinstance(self.account, BonjourAccount) and '@' not in self.target:

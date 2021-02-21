@@ -52,7 +52,7 @@ from sipclient.configuration.account import AccountExtension
 from sipclient.configuration.datatypes import ResourcePath
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
-from sipclient.system import IPAddressMonitor
+from sipclient.system import IPAddressMonitor, copy_default_certificates
 from sipclient.ui import Prompt, Question, RichText, UI
 
 
@@ -1421,6 +1421,12 @@ class SIPSessionApplication(SIPApplication):
         self._CH_devices()
 
         show_notice('Type /help to see a list of available commands.', bold=False)
+
+        copy_default_certificates()
+
+        if self.account.tls.certificate is None:
+            self.account.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
+            self.account.save()
 
         if self.target is not None:
             if self.filepath:
