@@ -2010,7 +2010,7 @@ class SIPSessionApplication(SIPApplication):
                     stream.encryption.smp_abort()
                 else:
                     show_notice("OTR verification requested by remote and replied automatically using ZRTP SAS", bold=False)
-                    stream.encryption.smp_answer(audio_stream.encryption.zrtp.sas)
+                    stream.encryption.smp_answer(audio_stream.encryption.zrtp.sas.encode())
                     self.smp_verifified_using_zrtp = True
             else:
                 show_notice("OTR verification requested by remote, reply using /otr_answer")
@@ -2022,7 +2022,7 @@ class SIPSessionApplication(SIPApplication):
             except StopIteration:
                 pass
             else:
-                stream.encryption.smp_verify(audio_stream.encryption.zrtp.sas, question=self.smp_verification_question)
+                stream.encryption.smp_verify(audio_stream.encryption.zrtp.sas.encode(), question=self.smp_verification_question)
                 show_notice("OTR verification performed automatically using ZRTP SAS...", bold=False)
                 self._update_prompt()
 
@@ -2781,7 +2781,7 @@ class SIPSessionApplication(SIPApplication):
                 show_notice("OTR functions can be used only during active chat sessions")
                 return
 
-            message_session.encryption.smp_answer(answer)
+            message_session.encryption.smp_answer(answer.encode())
             
         else:
             chat_stream = next((stream for stream in self.active_session.streams if stream.type == 'chat'), None)
@@ -2791,7 +2791,7 @@ class SIPSessionApplication(SIPApplication):
                 return
             
             if answer:
-                chat_stream.encryption.smp_answer(answer)
+                chat_stream.encryption.smp_answer(answer.encode())
 
     def _CH_otr_question(self, *args):
         question = " ".join(args) if args else None
@@ -2810,7 +2810,7 @@ class SIPSessionApplication(SIPApplication):
             if question:
                 show_notice("OTR SMP verification question will be asked for message: %s" % question)
                 message_session.encryption.verified = False
-                message_session.encryption.smp_verify(self.smp_secret, question=question)
+                message_session.encryption.smp_verify(self.smp_secret.encode(), question=question.encode())
                 
             return
 
@@ -2828,7 +2828,7 @@ class SIPSessionApplication(SIPApplication):
         if question:
             show_notice("OTR SMP verification question will be asked: %s" % question)
             chat_stream.encryption.verified = False
-            chat_stream.encryption.smp_verify(self.smp_secret, question=question.encode())
+            chat_stream.encryption.smp_verify(self.smp_secret.encode(), question=question.encode())
 
     def _CH_zrtp_verified(self):
         if self.active_session is None:
