@@ -2063,7 +2063,7 @@ class SIPSessionApplication(SIPApplication):
             else:
                 ui.status = "OTR remote fingerprint has not yet been verified"
 
-            reactor.callLater(5, setattr, ui, 'status', None)
+            reactor.callLater(15, setattr, ui, 'status', None)
 
         elif data.new_state is OTRState.Finished:
             show_notice("Chat encryption deactivated", bold=False)
