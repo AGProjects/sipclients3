@@ -14,7 +14,6 @@ from dateutil.tz import tzlocal
 from itertools import chain
 from lxml import html
 from optparse import OptionParser
-from otr import OTRState, SMPStatus
 from threading import Event, Thread
 from time import sleep
 
@@ -27,7 +26,7 @@ from twisted.internet import reactor
 from zope.interface import implementer
 
 from otr import OTRTransport, OTRState, SMPStatus
-from otr.exceptions import IgnoreMessage, UnencryptedMessage, EncryptedMessageError, OTRError
+from otr.exceptions import IgnoreMessage, UnencryptedMessage, EncryptedMessageError, OTRError, OTRFinishedError
 
 from sipsimple.core import Engine, FromHeader, Message, RouteHeader, SIPCoreError, SIPURI, ToHeader
 
@@ -105,12 +104,13 @@ class RTPStatisticsThread(Thread):
 
 
 class QueuedMessage(object):
-    def __init__(self, msg_id, content, content_type='text/plain'):
+    def __init__(self, msg_id, content, content_type='text/plain', call_id=None):
         self.id = msg_id
         self.content = content
         self.timestamp = None
         self.content_type = content_type
         self.encrypted = False
+        self.call_id = None
 
 
 class OTRInternalMessage(QueuedMessage):
@@ -279,7 +279,15 @@ class MessageSession(object):
                 else:
                     show_notice('Failed to encrypt outgoing message: %s' % str(e))
                 return
-            
+            except OTRFinishedError:
+                show_notice('Encryption has finished, please resend the message again')
+                return
+
+            if self.encryption.active and not message.content.startswith(b'?OTR:'):
+                show_notice('Encryption has been disabled by remote party, please resend the message again')
+                self.encryption.stop()
+                return None            
+
         else:
             what_type = 'OTR'
 
@@ -308,17 +316,23 @@ class MessageSession(object):
 
         self.notification_center.add_observer(self, sender=message_request)        
 
-        if message.id != 'OTR':
-            if '?OTR:' in content.decode():
-                show_notice('Encrypted message %s sent to %s' % (message.id, self.route.uri))
-                message.encrypted = True
-            else:
-                show_notice('Message %s sent to %s' % (message.id, self.route.uri))
 
         self.msg_map[message_request] = message
         message_request.send(15)
+        call_id = message_request._request.call_id.decode()
+        message.call_id = call_id
+        
+        if message.id != 'OTR':
+            if '?OTR:' in content.decode():
+                show_notice('Encrypted message %s sent to %s' % (call_id, self.route.uri))
+                message.encrypted = True
+            else:
+                show_notice('Message %s sent to %s' % (call_id, self.route.uri))
+        else:
+            show_notice('OTR message %s sent' % call_id)
 
-    def handle_incoming(self, from_header, content_type, data):
+
+    def handle_incoming(self, from_header, content_type, data, call_id):
         self.msg_id = self.msg_id + 1
         
         if content_type == 'message/cpim':
@@ -350,6 +364,7 @@ class MessageSession(object):
         try:
             content = self.encryption.otr_session.handle_input(content, content_type)
         except IgnoreMessage:
+            show_notice('OTR message %s received' % call_id)
             return None
         except UnencryptedMessage:
             encrypted = False
@@ -357,7 +372,7 @@ class MessageSession(object):
         except EncryptedMessageError as e:
             show_notice('OTP encrypted message error: %s' % str(e))
             return None
-        except OTRError as e:
+        except (OTRError, OTRFinishedError) as e:
             show_notice('OTP error: %s' % str(e))
             return None
         else:
@@ -389,10 +404,7 @@ class MessageSession(object):
         if notification.data.code == 202:
             show_notice('%s Message %s to %s will be delivered later by the server' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri))
         elif notification.data.code == 200:
-            if message.encrypted:
-                show_notice('%s Encrypted message %s received by %s' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri))
-            else:
-                show_notice('%s Message %s received by %s' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri))
+            show_notice('%s Message %s received by %s' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri))
         else:
             show_notice('%s Message %s received by %s (code %d)' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri, notification.data.code ))
         
@@ -1265,6 +1277,7 @@ class SIPSessionApplication(SIPApplication):
         self.smp_verification_tries = 5
         self.smp_secret = None
         self.must_exit = False
+        self.last_failure_reason = None
 
     def start(self, target, options, filepath=None):
         notification_center = NotificationCenter()
@@ -1606,7 +1619,10 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_SIPAccountRegistrationDidFail(self, notification):
         account = notification.sender
-        
+        if notification.data.error == self.last_failure_reason:
+            return
+
+        self.last_failure_reason = notification.data.error
         if self.active_session is None:
             show_notice('%s Failed to register contact for %s: %s (retrying in %.2f seconds)' % (datetime.now().replace(microsecond=0), account.id, notification.data.error, notification.data.retry_after))
         self.registration_succeeded[notification.sender.id] = False
@@ -1619,6 +1635,10 @@ class SIPSessionApplication(SIPApplication):
         show_notice('%s Registered Bonjour contact %s' % (datetime.now().replace(microsecond=0), notification.data.name))
 
     def _NH_BonjourAccountRegistrationDidFail(self, notification):
+        if notification.data.reason == self.last_failure_reason:
+            return
+
+        self.last_failure_reason = notification.data.reason
         show_notice('%s Failed to register Bonjour contact: %s' % (datetime.now().replace(microsecond=0), notification.data.reason))
 
     def _NH_BonjourAccountRegistrationDidEnd(self, notification):
@@ -1688,7 +1708,7 @@ class SIPSessionApplication(SIPApplication):
 
         message_session = self.message_session(identity, account=account, route=route)
 
-        parsed_payload = message_session.handle_incoming(data.from_header, content_type, data.body)
+        parsed_payload = message_session.handle_incoming(data.from_header, content_type, data.body, call_id)
 
         if parsed_payload is None:
             return
@@ -1729,14 +1749,18 @@ class SIPSessionApplication(SIPApplication):
             ui.status = "%s is composing a message" % identity
             reactor.callLater(2, setattr, ui, 'status', None)
         else:
-
             if encrypted:
                 show_notice("%s %s wrote: %s (%s encrypted)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
             else:
-                if content.startswith('?OTR:'):
-                    show_notice("%s %s wrote a garbled message, probably encryption session must be reset using /otr command" % (datetime.now().replace(microsecond=0), identity))
-                else:
-                    show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+                show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+
+            if not encrypted and message_session.encryption.active and content_type != 'application/im-iscomposing+xml':
+                show_notice("%s %s stopped the encryption" % (datetime.now().replace(microsecond=0), identity))
+                message_session.encryption.stop()
+
+            if content.startswith('?OTR:'):
+                show_notice("%s %s encrypted message could not be read" % (datetime.now().replace(microsecond=0), identity))
+                message_session.encryption.stop()
 
     def _NH_SIPSessionNewIncoming(self, notification):
         session = notification.sender
@@ -2755,6 +2779,7 @@ class SIPSessionApplication(SIPApplication):
         
         if chat_stream is None:
             return
+
         if chat_stream.encryption.active:
             show_notice("Chat encryption will stop")
             chat_stream.encryption.stop()
