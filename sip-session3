@@ -2312,9 +2312,6 @@ class SIPSessionApplication(SIPApplication):
         self._CH_neighbours()
 
     def _CH_neighbours(self):
-        if not isinstance(self.account, BonjourAccount):
-            show_notice('This command is only available if using the Bonjour account')
-            return
         lines = ['Bonjour neighbours:']
         for key, neighbour in self.neighbours.items():
             lines.append(' "%s (%s)" <%s>' % (neighbour.display_name, neighbour.host, neighbour.uri))
