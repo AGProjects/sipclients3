@@ -1117,6 +1117,22 @@ class SIPAudioApplication(SIPApplication):
         if stream.encryption.active:
             self.output.put('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher))
 
+    def _NH_RTPStreamZRTPLog(self, notification):
+        if 'Dropping packet' in notification.data.message:
+            return
+        self.output.put('ZRTP message: %s\n' % notification.data.message)
+
+    def _NH_RTPStreamDidEnableEncryption(self, notification):
+        stream = notification.sender
+        self.output.put("%s encryption activated using %s (%s)\n" % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
+
+        if stream.encryption.type == 'ZRTP':
+            peer_name = stream.encryption.zrtp.peer_name if stream.encryption.zrtp.peer_name else None
+            sas = stream.encryption.zrtp.sas.decode() if isinstance(stream.encryption.zrtp.sas, bytes) else stream.encryption.zrtp.sas
+            self.output.put("ZRTP secret is %s\n" % sas)
+            self.output.put("ZRTP peer name is %s\n" % (peer_name or 'not set'))
+            self.output.put("ZRTP peer is %s\n" % ('verified' if stream.encryption.zrtp.verified else 'not verified'))
+
     def _NH_ChatStreamGotMessage(self, notification):
         if not notification.data.message.content_type.startswith("text/"):
             return
