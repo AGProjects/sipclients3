@@ -29,7 +29,8 @@ from sipsimple.audio import WavePlayer
 from sipsimple.application import SIPApplication
 from sipsimple.configuration import ConfigurationError
 from sipsimple.configuration.settings import SIPSimpleSettings
-from sipsimple.core import Engine, SIPCoreError, SIPURI, ToHeader
+from sipsimple.core import Engine, SIPCoreError, SIPURI, ToHeader, CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
+from sipsimple import __version__ as version
 from sipsimple.lookup import DNSLookup
 from sipsimple.session import Session
 from sipsimple.streams import MediaStreamRegistry
@@ -234,6 +235,8 @@ class SIPAudioApplication(SIPApplication):
             self.output.put("Failed to load sipclient's configuration: %s\n" % str(e))
             self.output.put("If an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script.\n")
             self.output.stop()
+        else:
+            self.output.put("SDK version %s, core version %s, PJSIP version %s (%s)\n" % (version, CORE_REVISION, PJ_VERSION.decode(), PJ_SVN_REVISION))  
 
         if options.spool_dir:
             self.spool_dir = options.spool_dir

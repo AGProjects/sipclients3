@@ -36,6 +36,8 @@ from sipsimple.audio import WavePlayer
 from sipsimple.configuration import ConfigurationError
 from sipsimple.configuration.settings import SIPSimpleSettings
 from sipsimple.core import Route
+from sipsimple.core import CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
+from sipsimple import __version__ as version
 from sipsimple.lookup import DNSLookup
 from sipsimple.payloads.iscomposing import IsComposingMessage
 from sipsimple.session import IllegalStateError, Session
@@ -1360,6 +1362,8 @@ class SIPSessionApplication(SIPApplication):
             show_notice("If an old configuration file is in place, delete it or move it and recreate the configuration using the sip_settings script.", bold=False)
             ui.stop()
             self.stopped_event.set()
+        else:
+            show_notice("SDK version %s, core version %s, PJSIP version %s (%s)" % (version, CORE_REVISION, PJ_VERSION.decode(), PJ_SVN_REVISION))  
 
     # notification handlers
     #
