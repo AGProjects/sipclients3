@@ -1480,18 +1480,19 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_RTPStreamICENegotiationStateDidChange(self, notification):
         data = notification.data
+        stype = notification.sender.type.title()
         if data.state == 'GATHERING':
-            show_notice("Gathering ICE Candidates...")
+            show_notice("Gathering %s ICE Candidates..." % stype)
         elif data.state == 'NEGOTIATION_START':
-            show_notice("Connecting...")
+            show_notice("Probing remote %s ICE candidates..." % stype)
         elif data.state == 'NEGOTIATING':
-            show_notice("Negotiating ICE...")
+            show_notice("%s ICE negotiating in progress..." % stype)
         elif data.state == 'GATHERING_COMPLETE':
-            show_notice("Gathering Complete")
+            show_notice("%s ICE candidates gathering complete" % stype)
         elif data.state == 'RUNNING':
-            show_notice("ICE Negotiation Succeeded")
+            show_notice("%s ICE negotiation succeeded" % stype)
         elif data.state == 'FAILED':
-            show_notice("ICE Negotiation Failed", True)
+            show_notice("%s ICE negotiation failed" % stype, True)
 
     def _NH_RTPStreamICENegotiationDidFail(self, notification):
         stream = notification.sender
@@ -2003,7 +2004,7 @@ class SIPSessionApplication(SIPApplication):
         stream = notification.sender
         show_notice("%s encryption activated using %s (%s)" % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
 
-        if stream.encryption.type == 'ZRTP':
+        if stream.encryption.type == 'ZRTP' and stream.type == 'audio':
             peer_name = stream.encryption.zrtp.peer_name if stream.encryption.zrtp.peer_name else None
             sas = stream.encryption.zrtp.sas.decode() if isinstance(stream.encryption.zrtp.sas, bytes) else stream.encryption.zrtp.sas
             show_notice("ZRTP secret is %s" % sas)
@@ -2197,12 +2198,13 @@ class SIPSessionApplication(SIPApplication):
     # command handlers
     #
 
-
-    def _CH_call(self, target):
+    def _CH_call(self, target, video_option=None):
+        if video_option and video_option != '+video':
+            raise TypeError()
         if self.outgoing_session is not None:
             show_notice('Please cancel any outgoing sessions before makeing any new ones')
             return
-        call_initializer = OutgoingCallInitializer(self.account, target, audio=True, chat=True)
+        call_initializer = OutgoingCallInitializer(self.account, target, audio=True, video=video_option=='+video')
         call_initializer.start()
 
     def _CH_audio(self, target, chat_option=None):
@@ -2545,6 +2547,7 @@ class SIPSessionApplication(SIPApplication):
 
     def _CH_devices(self):
         engine = Engine()
+        settings = SIPSimpleSettings()
         show_notice('Available audio input devices: %s' % ', '.join(['None', 'system_default'] + sorted(engine.input_devices)), bold=False)
         show_notice('Available audio output devices: %s' % ', '.join(['None', 'system_default'] + sorted(engine.output_devices)), bold=False)
         if self.voice_audio_mixer.input_device == 'system_default':
@@ -2564,6 +2567,8 @@ class SIPSessionApplication(SIPApplication):
 
         if engine.video_devices:
             show_notice('Available cameras: %s' % ', '.join(sorted(engine.video_devices)))
+            show_notice('Selected camera: %s' % settings.video.device)
+
         else:
             if self.enable_video:
                 show_notice('No camera present, video is disabled')
@@ -3017,8 +3022,7 @@ class SIPSessionApplication(SIPApplication):
         lines = []
         lines.append('General commands:')
         lines.append('  /account [list|register|user@domain|enroll user password email display_name]: account management')
-        lines.append('  /call {user[@domain]}: call the specified user using audio and chat')
-        lines.append('  /audio {user[@domain]} [+chat]: call the specified user using audio and possibly chat')
+        lines.append('  /call {user[@domain]} [+video]: call the specified user using audio and optionally video')
         lines.append('  /chat {user[@domain]} [+audio]: call the specified user using chat and possibly audio')
         lines.append('  /[message | m] {user[@domain]}: start a message session')
         lines.append('  /send {user[@domain]} {file}: initiate a file transfer with the specified user')
