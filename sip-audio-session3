@@ -845,10 +845,10 @@ class SIPAudioApplication(SIPApplication):
 
         for stream in notification.data.streams:
             if stream.type in ('audio', 'video'):
-                self.output.put('%s stream established using %s codec at %sHz\n' % (stream.type.title(), stream.codec.decode().capitalize(), stream.sample_rate))
+                self.output.put('%s stream established using %s codec at %sHz\n' % (stream.type.title(), stream.codec.capitalize(), stream.sample_rate))
 
                 if stream.ice_active:
-                    self.output.put('%s RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.type.title(), stream.local_rtp_address.decode(),
+                    self.output.put('%s RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.type.title(), stream.local_rtp_address,
                                                                                                         stream.local_rtp_port,
                                                                                                         stream.local_rtp_candidate.type.lower(),
                                                                                                         stream.remote_rtp_address,
@@ -856,9 +856,9 @@ class SIPAudioApplication(SIPApplication):
                                                                                                         stream.remote_rtp_candidate.type.lower()))
                 else:
                     self.output.put('%s RTP endpoints %s:%d <-> %s:%d\n' % (stream.type.title(), 
-                                                                               stream.local_rtp_address.decode(), 
+                                                                               stream.local_rtp_address, 
                                                                                stream.local_rtp_port, 
-                                                                               stream.remote_rtp_address.decode(), 
+                                                                               stream.remote_rtp_address, 
                                                                                stream.remote_rtp_port))
                 if stream.encryption.active:
                     self.output.put('%s stream is encrypted using %s (%s)\n' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
