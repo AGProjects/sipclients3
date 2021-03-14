@@ -1325,6 +1325,7 @@ class SIPSessionApplication(SIPApplication):
                           'n': 'trace notifications',
                           'h': 'hangup',
                           'r': 'record',
+                          'c': 'camera',
                           'i': 'input',
                           'o': 'output',
                           'a': 'alert',
@@ -2400,6 +2401,33 @@ class SIPSessionApplication(SIPApplication):
             self.voice_audio_mixer.muted = False
         show_notice('The microphone is now %s' % ('muted' if self.voice_audio_mixer.muted else 'unmuted'))
 
+    def _CH_camera(self, device=None):
+        engine = Engine()
+        settings = SIPSimpleSettings()
+        video_devices = [None] + sorted(engine.video_devices)
+        if device is None:
+            if settings.video.device in video_devices:
+                old_device = settings.video.device
+            else:
+                old_device = None
+            new_device = video_devices[(video_devices.index(old_device)+1) % len(video_devices)]
+            settings.video.device = new_device
+            settings.save()
+            show_notice('Video device changed to %s' % new_device)
+        else:
+            device = device.decode(sys.getfilesystemencoding())
+            if device == 'None':
+                device = None
+            elif device not in video_devices:
+                show_notice('Unknown video device %s. Type /devices to see a list of available devices' % device)
+                return
+            try:
+                settings.video.device = new_device
+            except SIPCoreError as e:
+                show_notice('Failed to set video device to %s: %s' % (device, str(e)))
+            else:
+                show_notice('Video device changed to %s' % new_device)
+
     def _CH_input(self, device=None):
         engine = Engine()
         settings = SIPSimpleSettings()
@@ -3002,6 +3030,7 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /trace [[+|-]sip] [[+|-]msrp] [[+|-]pjsip] [[+|-]notifications]: toggle/set tracing on the console (ctrl-x s | ctrl-x m | ctrl-x j | ctrl-x n)')
         lines.append('  /rtp [on|off]: toggle/set printing RTP statistics and ICE negotiation results on the console (ctrl-x p)')
         lines.append('  /mute [on|off]: mute the microphone (ctrl-x u)')
+        lines.append('  /camera [device]: change audio input device (ctrl-x c)')
         lines.append('  /input [device]: change audio input device (ctrl-x i)')
         lines.append('  /output [device]: change audio output device (ctrl-x o)')
         lines.append('  /alert [device]: change audio alert device (ctrl-x a)')
