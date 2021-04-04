@@ -1442,7 +1442,7 @@ class SIPSessionApplication(SIPApplication):
 
         copy_default_certificates()
 
-        if self.account.tls.certificate is None:
+        if self.account.tls.certificate is None and isinstance(self.account, BonjourAccount):
             self.account.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
             self.account.save()
 
