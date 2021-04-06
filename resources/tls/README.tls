@@ -1,0 +1,8 @@
+How to import TLS cert on Mac
+
+You must create a .p12 file.  In order to do that you need your private key
+and a certificate for that key.  Then run the following on your console:
+
+openssl pkcs12 -export -clcerts -inkey default.crt -in default.crt -out blink.p12 -name "Blink Client"
+
+Then import blink.p12 into Keychain
