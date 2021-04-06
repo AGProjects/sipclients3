@@ -340,6 +340,8 @@ class SIPAudioApplication(SIPApplication):
 
         self.output.put('Available audio input devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.input_devices)))
         self.output.put('Available audio output devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.output_devices)))
+        self.output.put('Available audio codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_codecs]))
+        self.output.put('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
         if engine.video_devices:
             self.output.put('Available cameras: %s\n' % ', '.join(sorted(engine.video_devices)))
         else:

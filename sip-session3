@@ -1428,6 +1428,9 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_SIPApplicationDidStart(self, notification):
         settings = SIPSimpleSettings()
+        engine = Engine()
+        show_notice('Available audio codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_codecs]))
+        show_notice('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
 
         self.ip_address_monitor.start()
 
