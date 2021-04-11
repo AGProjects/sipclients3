@@ -280,17 +280,22 @@ class RegistrationApplication(SIPApplication):
         if notification.data.code >= 300:
             registrar = notification.data.registrar
             code = notification.data.code
-            reason = notification.data.reason
+            reason = notification.data.reason.decode() if isinstance(notification.data.reason, bytes) else notification.data.reason
             self.output.put('%s Registration failed at %s:%d;transport=%s: %d %s\n' % (datetime.now().replace(microsecond=0), registrar.address, registrar.port, registrar.transport, code, reason))
 
     def _NH_SIPAccountRegistrationDidFail(self, notification):
-        self.output.put('%s Failed to register contact for sip:%s: %s (retrying in %.2f seconds)\n' % (datetime.now().replace(microsecond=0), self.account.id, notification.data.error, notification.data.retry_after))
+        reason = notification.data.error.decode() if isinstance(notification.data.error, bytes) else notification.data.error
         self.success = False
-        
         if self.max_registers is not None:
             self.max_registers -= 1
             if self.max_registers == 0:
+                self.output.put('%s Failed to register contact for sip:%s: %s\n' % (datetime.now().replace(microsecond=0), self.account.id, reason))
                 self.stop()
+            else:
+                self.output.put('%s Failed to register contact for sip:%s: %s (retrying in %.2f seconds)\n' % (datetime.now().replace(microsecond=0), self.account.id, reason, notification.data.retry_after))
+        else:
+            self.output.put('%s Failed to register contact for sip:%s: %s\n' % (datetime.now().replace(microsecond=0), self.account.id, reason))
+            self.stop()
 
     def _NH_SIPAccountRegistrationDidEnd(self, notification):
         self.output.put('%s Registration ended.\n' % datetime.now().replace(microsecond=0))
