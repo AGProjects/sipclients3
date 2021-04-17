@@ -807,7 +807,7 @@ class OutgoingProposalHandler(object):
 
     def _NH_SIPSessionDidEnd(self, notification):
         notification_center = NotificationCenter()
-        notification_center.remove_observer(self, sender=self.session)
+        notification_center.discard_observer(self, sender=self.session)
 
 
 @implementer(IObserver)
@@ -913,7 +913,7 @@ class IncomingProposalHandler(object):
         notification_center = NotificationCenter()
         ui = UI()
         session = notification.sender
-        notification_center.remove_observer(self, sender=session)
+        notification_center.discard_observer(self, sender=session)
 
         ui.status = None
 
@@ -1808,7 +1808,7 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_SIPSessionDidFail(self, notification):
         notification_center = NotificationCenter()
-        notification_center.remove_observer(self, sender=notification.sender)
+        notification_center.discard_observer(self, sender=notification.sender)
 
         if self.must_exit:
             self.stop()
@@ -1856,7 +1856,7 @@ class SIPSessionApplication(SIPApplication):
     def _NH_SIPSessionDidEnd(self, notification):
         notification_center = NotificationCenter()
         session = notification.sender
-        notification_center.remove_observer(self, sender=session)
+        notification_center.discard_observer(self, sender=session)
         for stream in session.streams or session.proposed_streams or []:
             notification_center.remove_observer(self, sender=stream)
 
