@@ -224,7 +224,7 @@ class SIPMessageApplication(SIPApplication):
                     uri = SIPURI(host=self.account.id.domain)
                 else:
                     uri = self.target
-                lookup.lookup_sip_proxy(uri, settings.sip.transport_list)
+                lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name)
         else:
             self.output.put('Press Ctrl+D to stop the program.\n')
 
@@ -256,7 +256,7 @@ class SIPMessageApplication(SIPApplication):
                 uri = SIPURI(host=self.account.id.domain)
             else:
                 uri = self.target
-            lookup.lookup_sip_proxy(uri, settings.sip.transport_list)
+            lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name)
 
     def _NH_SIPEngineGotException(self, notification):
         self.output.put('An exception occured within the SIP core:\n%s\n' % notification.data.traceback)

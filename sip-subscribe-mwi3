@@ -353,7 +353,7 @@ class SubscriptionApplication(object):
             uri = SIPURI(host=self.account.id.domain)
         else:
             uri = self.target.uri
-        lookup.lookup_sip_proxy(uri, settings.sip.transport_list)
+        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name)
 
 
 if __name__ == "__main__":

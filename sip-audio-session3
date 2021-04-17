@@ -414,7 +414,8 @@ class SIPAudioApplication(SIPApplication):
 
                 self.session_spool_dir = self.spool_dir + "/" + (self.options.external_id or str(uuid.uuid1()))
 
-                lookup.lookup_sip_proxy(uri, settings.sip.transport_list)
+                tls_name = self.account.sip.tls_name if isinstance(self.account, Account) else None
+                lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=tls_name)
 
                 try:
                     makedirs(self.session_spool_dir)

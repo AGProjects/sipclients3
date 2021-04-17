@@ -677,7 +677,7 @@ class PublicationApplication(object):
                 uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
             else:
                 uri = SIPURI(host=self.account.id.domain)
-            self.lookup.lookup_sip_proxy(uri, settings.sip.transport_list)
+            self.lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name)
             self.publishing = True
 
     def unpublish(self):

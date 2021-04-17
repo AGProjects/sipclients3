@@ -372,7 +372,7 @@ class SubscriptionApplication(object):
             uri = SIPURI(host=self.account.id.domain)
         else:
             uri = self.target.uri
-        lookup.lookup_sip_proxy(uri, settings.sip.transport_list)
+        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name)
 
     def _format_note(self, note):
         text = "Note"
