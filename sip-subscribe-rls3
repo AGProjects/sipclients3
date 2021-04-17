@@ -276,7 +276,7 @@ class SubscriptionApplication(object):
 
     def _NH_SIPSubscriptionGotNotify(self, notification):
         if notification.data.body:
-            self.output.put('Received NOTIFY:\n' + notification.data.body)
+            self.output.put('Received NOTIFY:\n' + notification.data.body.decode())
             self.print_help()
 
     def _NH_DNSLookupDidSucceed(self, notification):
