@@ -377,14 +377,13 @@ class SIPAudioApplication(SIPApplication):
         self.hold_tone = WavePlayer(self.voice_audio_mixer, ResourcePath('sounds/hold_tone.wav').normalized, loop_count=0, pause_time=30, volume=50)
         self.voice_audio_bridge.add(self.hold_tone)
 
-        copy_default_certificates()
-
         if settings.tls.ca_list is None:
-            show_notice('Initializing default TLS certificates and settings')
+            copy_default_certificates()
+            self.output.put('Initializing default TLS certificates and settings')
             settings.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
             settings.tls.verify_server = True
             settings.save()
-            
+
             if isinstance(self.account, Account):
                 self.account.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
                 self.account.tls.verify_server = True

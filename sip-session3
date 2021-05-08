@@ -1443,14 +1443,13 @@ class SIPSessionApplication(SIPApplication):
 
         show_notice('Type /help to see a list of available commands.', bold=False)
 
-        copy_default_certificates()
-        
         if settings.tls.ca_list is None:
             show_notice('Initializing default TLS certificates and settings')
+            copy_default_certificates()
             settings.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
             settings.tls.verify_server = True
             settings.save()
-            
+
             if isinstance(self.account, Account):
                 self.account.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')                
                 self.account.tls.verify_server = True
