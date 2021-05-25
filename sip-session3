@@ -339,7 +339,7 @@ class MessageSession(object):
         
         if content_type == 'message/cpim':
             try:
-                payload = CPIMPayload.decode(content)
+                payload = CPIMPayload.decode(data)
             except CPIMParserError as e:
                 show_notice('CPIM parse error: %s' % str(e))
                 return None
