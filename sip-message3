@@ -301,7 +301,7 @@ class SIPMessageApplication(SIPApplication):
         if from_header.display_name:
             identity = '"%s" <%s>' % (from_header.display_name, identity)
         body = notification.data.body
-        self.output.put("Got MESSAGE from '%s', Content-Type: %s\n%s\n" % (identity, content_type, body))
+        self.output.put("Got %s MESSAGE from %s: \n%s\n" % (content_type, identity, body.decode()))
 
     def _NH_SIPMessageDidSucceed(self, notification):
         self.output.put('MESSAGE was accepted by remote party\n')
