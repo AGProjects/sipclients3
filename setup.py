@@ -35,6 +35,7 @@ setup(
         'sip-register3',
         'sip-session3',
         'sip-settings3',
+        'sip-subscribe-conference3',
         'sip-subscribe-mwi3',
         'sip-subscribe-presence3',
         'sip-subscribe-rls3',
