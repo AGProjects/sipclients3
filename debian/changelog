@@ -1,3 +1,40 @@
+sipclients (4.1.0) unstable; urgency=medium
+
+  * Added sip-subscribe-conference script
+  * Fixed decoding CPIM payload
+  * Improve init TLS default settings
+  * Initialize default TLS settings
+  * Fixed presence note
+  * Fixed decoding RLS payload
+  * Use discard observer instead of remove
+  * Pass tls_name attribute to Route header
+  * Improve sip-register logic
+  * Log available codecs built into the core UA
+  * Improved video sessions
+  * Fixed decoding core rtp metadata
+  * Added command to change cameras in sip-session script
+  * Don't restrict show neighbours command to Bonjour account
+  * Log ZRTP negotiation in sip-audio-session
+  * Log core version
+  * OTR session fixes
+  * Make MESSAGE work for bonjour accounts
+  * Fixed OTR encryption
+  * Added ICE nat traversal notifications
+  * Added call transfer
+  * Fixed overwriting existing session end handlers
+  * Fixed decoding ICE negotiation failure
+  * Show conference info payload 
+  * Exit sip-session after file transfer from command line
+  * Fixed subscribe body
+  * Show ZRTP commands feedback
+  * Fixed Thread obsolete function
+  * Fixed resources path
+  * Show file transfer checksum calculating progress
+  * Allow sipclients3 to coexist with previous sipclients
+  * Added a default TLS certificate and CA list 
+
+ -- Adrian Georgescu <ag@ag-projects.com>  Tue, 01 Jun 2021 15:48:26 -0300
+
 sipclients (4.0.0) unstable; urgency=medium
 
   * Migrate to Python3
