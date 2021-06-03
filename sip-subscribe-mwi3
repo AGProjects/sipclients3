@@ -183,8 +183,6 @@ class SubscriptionApplication(object):
         # start the input thread
         self.input.start()
 
-        reactor.callLater(0, self._subscribe)
-
         # start twisted
         try:
             reactor.run()
@@ -297,6 +295,9 @@ class SubscriptionApplication(object):
         notification_center = NotificationCenter()
         notification_center.add_observer(self, sender=self.subscription)
         self.subscription.subscribe(extra_headers=[Header('Supported', 'eventlist')], timeout=5)
+
+    def _NH_SIPEngineDidStart(self, notification):
+        self._subscribe()
 
     def _NH_DNSLookupDidFail(self, notification):
         self.output.put('DNS lookup failed: %s' % notification.data.error)

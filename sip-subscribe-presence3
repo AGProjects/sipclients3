@@ -192,8 +192,6 @@ class SubscriptionApplication(object):
         # start the input thread
         self.input.start()
 
-        reactor.callLater(0, self._subscribe)
-
         # start twisted
         try:
             reactor.run()
@@ -230,8 +228,7 @@ class SubscriptionApplication(object):
             handler(notification)
 
     def _NH_SIPEngineDidStart(self, notification):
-        dns_manager = DNSManager()
-        self.engine.set_nameservers(dns_manager.nameservers)
+        self._subscribe()
 
     def _NH_SIPSubscriptionDidStart(self, notification):
         route = Route(notification.sender.route_header.uri.host, notification.sender.route_header.uri.port, notification.sender.route_header.uri.parameters.get('transport', 'udp'))
