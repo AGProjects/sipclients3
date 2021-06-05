@@ -170,7 +170,7 @@ class RegistrationApplication(SIPApplication):
         notification_center.add_observer(self, sender=self.account)
         if self.account is BonjourAccount() and self.max_registers is not None:
             if self.max_registers == 1:
-                self.max_registers = len([transport for transport in settings.sip.transport_list if (transport!='tls' or self.account.tls.certificate is not None)])
+                self.max_registers = len([transport for transport in settings.sip.transport_list if (transport!='tls' or settings.tls.certificate is not None)])
             else:
                 self.output.put('--max-registers option only accepts 0 or 1 if using Bonjour account\n')
                 self.output.stop()
@@ -200,15 +200,6 @@ class RegistrationApplication(SIPApplication):
             settings.tls.verify_server = True
             settings.save()
 
-            if isinstance(self.account, Account):
-                self.account.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
-                self.account.tls.verify_server = True
-                self.account.save()
-
-        if self.account.tls.certificate is None and isinstance(self.account, BonjourAccount):
-            self.account.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
-            self.account.save()
-            
         self.ip_address_monitor.start()
         if self.account is not BonjourAccount() and self.max_registers != 1 and not self.options.batch_mode:
             self.print_help()

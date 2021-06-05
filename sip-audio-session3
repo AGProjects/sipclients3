@@ -384,15 +384,6 @@ class SIPAudioApplication(SIPApplication):
             settings.tls.verify_server = True
             settings.save()
 
-            if isinstance(self.account, Account):
-                self.account.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
-                self.account.tls.verify_server = True
-                self.account.save()
-                
-        if self.account.tls.certificate is None and isinstance(self.account, BonjourAccount):
-            self.account.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
-            self.account.save()
-
         if self.target is not None:
             if isinstance(self.account, BonjourAccount) and '@' not in self.target:
                 self.output.put('Bonjour mode requires a host in the destination address\n')
