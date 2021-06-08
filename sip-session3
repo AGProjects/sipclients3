@@ -7,6 +7,7 @@ import sys
 import urllib.request, urllib.parse, urllib.error
 import random
 import requests
+import uuid
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -43,7 +44,9 @@ from sipsimple.payloads.iscomposing import IsComposingMessage
 from sipsimple.session import IllegalStateError, Session
 from sipsimple.streams import MediaStreamRegistry
 from sipsimple.streams.msrp.filetransfer import FileSelector
-from sipsimple.streams.msrp.chat import CPIMPayload, SimplePayload, CPIMParserError, ChatIdentity, OTREncryption
+from sipsimple.streams.msrp.chat import CPIMPayload, CPIMHeader, CPIMNamespace, SimplePayload, CPIMParserError, ChatIdentity, OTREncryption
+from sipsimple.payloads.imdn import IMDNDocument, DisplayNotification, DeliveryNotification
+
 from sipsimple.storage import FileStorage
 from sipsimple.threading.green import run_in_green_thread
 from sipsimple.util import ISOTimestamp
@@ -296,11 +299,19 @@ class MessageSession(object):
         if message.timestamp is None:
             message.timestamp = ISOTimestamp.now()
  
+        content_type = 'text/plain'
+        additional_cpim_headers = []
+        additional_sip_headers = []
 
+        if self.account.sms.enable_imdn:
+            ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
+            id = str(uuid.uuid4())
+            additional_cpim_headers = [CPIMHeader('Message-ID', ns, id)]
+                
         if self.use_cpim:
             content_type = 'message/cpim'
             payload = CPIMPayload(message.content,
-                                  'text/plain', 
+                                  content_type, 
                                   charset='utf-8', 
                                   sender=ChatIdentity(self.account.uri, self.account.display_name),
                                   recipients=[ChatIdentity(self.remote_uri, None)])
@@ -314,12 +325,12 @@ class MessageSession(object):
                                   RouteHeader(self.route.uri),
                                   content_type,
                                   content,
-                                  credentials=self.account.credentials)
+                                  credentials=self.account.credentials,
+                                  extra_headers=additional_sip_headers)
 
-        self.notification_center.add_observer(self, sender=message_request)        
+        self.notification_center.add_observer(self, sender=message_request)
 
-
-        self.msg_map[message_request] = message
+        self.msg_map[str(message_request)] = message
         message_request.send(15)
         call_id = message_request._request.call_id.decode()
         message.call_id = call_id
@@ -347,7 +358,7 @@ class MessageSession(object):
 
                 if payload.sender:
                     identity = '%s@%s' % (payload.sender.uri.user.decode(), payload.sender.uri.host.decode())
-                    if from_header.uri == cpim_message.sender.uri:
+                    if from_header.uri == payload.sender.uri:
                         if payload.sender.display_name:
                             identity = '"%s" <%s>' % (payload.sender.display_name, identity)
                         elif from_header.display_name:
@@ -391,11 +402,11 @@ class MessageSession(object):
         self.notification_center.remove_observer(self, sender=notification.sender)
 
         try:
-            message = self.msg_map[notification.sender]
+            message = self.msg_map[str(notification.sender)]
         except KeyError:
             message = None
         else:
-            del(self.msg_map[notification.sender])
+            del(self.msg_map[str(notification.sender)])
             
         if not message:
             return
@@ -414,11 +425,11 @@ class MessageSession(object):
     def _NH_SIPMessageDidFail(self, notification):
         self.notification_center.remove_observer(self, sender=notification.sender)
         try:
-            message = self.msg_map[notification.sender]
+            message = self.msg_map[str(notification.sender)]
         except KeyError:
             message = None
         else:
-            del(self.msg_map[notification.sender])
+            del(self.msg_map[str(notification.sender)])
             
         if not message:
             return
@@ -1746,7 +1757,7 @@ class SIPSessionApplication(SIPApplication):
         if from_header.display_name:
             identity = '"%s" <%s>' % (from_header.display_name, identity)
             
-        content = content.decode()
+        content = content.decode() if isinstance(content, bytes) else content
         
         if is_composing:
             ui = UI()

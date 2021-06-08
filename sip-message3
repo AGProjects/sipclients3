@@ -6,6 +6,7 @@ import select
 import signal
 import sys
 import termios
+import uuid
 
 from datetime import datetime
 from optparse import OptionParser
@@ -23,14 +24,18 @@ from sipsimple.application import SIPApplication
 from sipsimple.configuration import ConfigurationError
 from sipsimple.configuration.settings import SIPSimpleSettings
 from sipsimple.core import Engine
-from sipsimple.lookup import DNSLookup
+from sipsimple.lookup import DNSLookup, DNSLookupError
 from sipsimple.storage import FileStorage
+from sipsimple.streams.msrp.chat import CPIMPayload, SimplePayload, CPIMParserError, CPIMHeader, ChatIdentity, CPIMNamespace
+from sipsimple.payloads.imdn import IMDNDocument, DisplayNotification, DeliveryNotification
 
 from sipclient.configuration import config_directory
 from sipclient.configuration.account import AccountExtension
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
 from sipclient.system import IPAddressMonitor
+from sipsimple.util import ISOTimestamp
+from sipsimple.threading.green import run_in_green_thread
 
 
 class InputThread(Thread):
@@ -292,16 +297,110 @@ class SIPMessageApplication(SIPApplication):
 
     def _NH_SIPEngineGotMessage(self, notification):
         content_type = notification.data.content_type
-        if content_type not in ('text/plain', 'text/html'):
-            return
+        data = notification.data
+
         from_header = FromHeader.new(notification.data.from_header)
         from_header.parameters = {}
         from_header.uri.parameters = {}
         identity = str(from_header.uri)
+
         if from_header.display_name:
             identity = '"%s" <%s>' % (from_header.display_name, identity)
         body = notification.data.body
-        self.output.put("Got %s MESSAGE from %s: \n%s\n" % (content_type, identity, body.decode()))
+
+        cpim_imdn_events = None
+        imdn_timestamp = None
+        imdn_id = None
+        
+        is_cpim = False
+        if content_type == 'message/cpim':
+            try:
+                cpim_message = CPIMPayload.decode(data.body)
+            except CPIMParserError:
+                self.output.put("Incoming SMS from %s has invalid CPIM content" % identity)
+                return
+            else:
+                is_cpim = True
+                content = cpim_message.content
+                content_type = cpim_message.content_type
+                sender_identity = cpim_message.sender or data.from_header
+                imdn_timestamp = cpim_message.timestamp
+                for h in cpim_message.additional_headers:
+                    if h.name == "Message-ID":
+                        imdn_id = h.value
+                    if h.name == "Disposition-Notification":
+                        cpim_imdn_events = h.value
+
+        else:
+            content = data.body
+            content_type = data.content_type
+            sender_identity = data.from_header
+
+        self.output.put("Got %s MESSAGE from %s: \n%s\n" % (content_type, identity, content.decode()))
+        if cpim_imdn_events and imdn_timestamp:
+            self.output.put("IMDN delivery notification requested for: %s\n" % cpim_imdn_events)
+            if self.account.sms.enable_imdn:
+                if 'delivery' in cpim_imdn_events:
+                    self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'delivered')
+
+                if 'display' in cpim_imdn_events:
+                    self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
+                
+
+    @run_in_green_thread           
+    def send_imdn_notification(self, imdn_id, imdn_timestamp, recipient, sender_identity, event):
+        self.output.put("Sending IMDN %s notification to %s\n" % (event, recipient))
+    
+        if event == 'delivered':
+            notification = DeliveryNotification('delivered')
+        elif event == 'displayed':
+            notification = DisplayNotification(event)
+        else:
+            return
+        
+        content = IMDNDocument.create(message_id=imdn_id, datetime=imdn_timestamp, recipient_uri=recipient, notification=notification)
+
+        imdn_id = str(uuid.uuid4())
+        ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
+        additional_headers = [CPIMHeader('Message-ID', ns, imdn_id)]
+    
+        payload = CPIMPayload(content,
+                              IMDNDocument.content_type,
+                              charset='utf-8',
+                              sender=ChatIdentity(self.account.uri, self.account.display_name),
+                              recipients=[ChatIdentity(sender_identity, None)],
+                              timestamp=ISOTimestamp.now(),
+                              additional_headers=additional_headers)
+
+        payload, content_type = payload.encode()
+        
+        settings = SIPSimpleSettings()
+        if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
+            uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
+        elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
+            uri = SIPURI(host=self.account.id.domain)
+        else:
+            uri = SIPURI.parse(recipient)
+        
+        target = SIPURI.parse(recipient)
+
+        lookup = DNSLookup()
+
+        try:
+            routes = lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name).wait()
+        except DNSLookupError as e:
+            self.output.put('Failed to lookp destination for %s' % uri)
+        else:
+            route = routes[0]
+
+            message_request = Message(FromHeader(self.account.uri, self.account.display_name), 
+                                      ToHeader(target), 
+                                      RouteHeader(route.uri), 
+                                      content_type, 
+                                      payload,
+                                      credentials=self.account.credentials)
+            message_request.send()
+
 
     def _NH_SIPMessageDidSucceed(self, notification):
         self.output.put('MESSAGE was accepted by remote party\n')
@@ -322,7 +421,38 @@ class SIPMessageApplication(SIPApplication):
                 identity = '"%s" <%s>' % (self.account.display_name, identity)
             self.output.put("Sending MESSAGE from '%s' to '%s' using proxy %s\n" % (identity, self.target, route))
             self.output.put('Press Ctrl+D to stop the program.\n')
-            message_request = Message(FromHeader(self.account.uri, self.account.display_name), ToHeader(self.target), RouteHeader(route.uri), 'text/plain', self.message, credentials=self.account.credentials)
+
+            content_type = 'text/plain'
+            additional_cpim_headers = []
+            additional_sip_headers = []
+
+            if self.account.sms.enable_imdn:
+                ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
+                id = str(uuid.uuid4())
+                additional_cpim_headers = [CPIMHeader('Message-ID', ns, id)]
+                additional_cpim_headers.append(CPIMHeader('Disposition-Notification', ns, 'positive-delivery, display'))
+
+
+            if self.account.sms.use_cpim:
+                payload = CPIMPayload(self.message,
+                                      content_type,
+                                      charset='utf-8',
+                                      sender=ChatIdentity(self.account.uri, self.account.display_name),
+                                      recipients=[ChatIdentity(self.target, None)],
+                                      timestamp=ISOTimestamp.now(),
+                                      additional_headers=additional_cpim_headers)
+
+                payload, content_type = payload.encode()
+            else:
+                payload = self.message
+
+            message_request = Message(FromHeader(self.account.uri, self.account.display_name), 
+                                      ToHeader(self.target), 
+                                      RouteHeader(route.uri), 
+                                      content_type, 
+                                      payload, 
+                                      credentials=self.account.credentials, 
+                                      extra_headers=additional_sip_headers)
             notification_center.add_observer(self, sender=message_request)
             message_request.send()
         else:
