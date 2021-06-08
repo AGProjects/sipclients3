@@ -16,6 +16,7 @@ from time import sleep
 from application import log
 from application.notification import NotificationCenter, NotificationData
 from application.python.queue import EventQueue
+from application.python import Null
 
 from sipsimple.core import FromHeader, Message, RouteHeader, SIPCoreError, SIPURI, ToHeader
 
@@ -330,11 +331,17 @@ class SIPMessageApplication(SIPApplication):
                         imdn_id = h.value
                     if h.name == "Disposition-Notification":
                         cpim_imdn_events = h.value
-
         else:
             content = data.body
             content_type = data.content_type
             sender_identity = data.from_header
+
+        if content_type == 'message/imdn+xml':
+            document = IMDNDocument.parse(content)
+            imdn_message_id = document.message_id.value
+            imdn_status = document.notification.status.__str__()
+            self.output.put("%s Got IMDN for message %s to %s: %s\n" % (datetime.now().replace(microsecond=0), imdn_message_id, identity, imdn_status))
+            return
 
         self.output.put("Got %s MESSAGE from %s: \n%s\n" % (content_type, identity, content.decode()))
         if cpim_imdn_events and imdn_timestamp:
@@ -403,7 +410,13 @@ class SIPMessageApplication(SIPApplication):
 
 
     def _NH_SIPMessageDidSucceed(self, notification):
-        self.output.put('MESSAGE was accepted by remote party\n')
+        data = notification.data
+        user_agent = data.headers.get('User-Agent', Null).body
+        client = data.headers.get('Client', Null).body
+        server = data.headers.get('Server', Null).body
+        entity = user_agent or server or client
+
+        self.output.put('MESSAGE was accepted by %s\n' % entity)
         self.stop()
 
     def _NH_SIPMessageDidFail(self, notification):
