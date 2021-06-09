@@ -40,7 +40,7 @@ from sipsimple.core import Route
 from sipsimple.core import CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
 from sipsimple import __version__ as version
 from sipsimple.lookup import DNSLookup
-from sipsimple.payloads.iscomposing import IsComposingMessage
+from sipsimple.payloads.iscomposing import IsComposingMessage, IsComposingDocument
 from sipsimple.session import IllegalStateError, Session
 from sipsimple.streams import MediaStreamRegistry
 from sipsimple.streams.msrp.filetransfer import FileSelector
@@ -230,7 +230,7 @@ class MessageSession(object):
         if not self.started:
             self.message_queue.start()
         
-        if not self.encryption.active:
+        if not self.encryption.active and self.account.sms.enable_otr:
             self.encryption.start()
 
         self.started = True
@@ -240,20 +240,47 @@ class MessageSession(object):
         show_notice('%s Session to %s failed: DNS lookup failed' % (datetime.now().replace(microsecond=0), self.remote_uri))
         self.message_queue.stop()
         
-    def send_message(self, message):
         if not self.routes:
             self.start()
 
         self.msg_id = self.msg_id + 1
 
         if not isinstance(message, OTRInternalMessage):
-            messageObject = QueuedMessage(self.msg_id , message)
+            messageObject = QueuedMessage(self.msg_id , message, content_type)
             self.message_queue.put(messageObject)
         else:
             self.message_queue.put(message)
 
         return self.msg_id 
-        
+
+    def send_message(self, message, content_type='text/plain'):
+        if not self.routes:
+            self.start()
+
+        self.msg_id = self.msg_id + 1
+
+        if not isinstance(message, OTRInternalMessage):
+            messageObject = QueuedMessage(self.msg_id , message, content_type)
+            self.message_queue.put(messageObject)
+        else:
+            self.message_queue.put(message)
+
+        return self.msg_id
+
+    @run_in_green_thread           
+    def send_imdn_notification(self, imdn_id, imdn_timestamp, recipient, sender_identity, event):
+        if event == 'delivered':
+            notification = DeliveryNotification('delivered')
+        elif event == 'displayed':
+            notification = DisplayNotification(event)
+        else:
+            return
+
+        content = IMDNDocument.create(message_id=imdn_id, datetime=imdn_timestamp, recipient_uri=recipient, notification=notification)
+        self.send_message(content.decode(), content_type=IMDNDocument.content_type)
+
+            
+    @run_in_green_thread           
     def _send_message(self, message):
         if not self.routes:
             return
@@ -275,23 +302,24 @@ class MessageSession(object):
         what_type = None
 
         if not isinstance(message, OTRInternalMessage):
-            try:
-                message.content = self.encryption.otr_session.handle_output(message.content, message.content_type)
-            except OTRError as e:
-                if 'has ended the private conversation' in str(e):
+            if message.content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
+                try:
+                    message.content = self.encryption.otr_session.handle_output(message.content, message.content_type)
+                except OTRError as e:
+                    if 'has ended the private conversation' in str(e):
+                        show_notice('Encryption has been disabled by remote party, please resend the message again')
+                        self.encryption.stop()
+                    else:
+                        show_notice('Failed to encrypt outgoing message: %s' % str(e))
+                    return
+                except OTRFinishedError:
+                    show_notice('Encryption has finished, please resend the message again')
+                    return
+
+                if self.encryption.active and not message.content.startswith(b'?OTR:'):
                     show_notice('Encryption has been disabled by remote party, please resend the message again')
                     self.encryption.stop()
-                else:
-                    show_notice('Failed to encrypt outgoing message: %s' % str(e))
-                return
-            except OTRFinishedError:
-                show_notice('Encryption has finished, please resend the message again')
-                return
-
-            if self.encryption.active and not message.content.startswith(b'?OTR:'):
-                show_notice('Encryption has been disabled by remote party, please resend the message again')
-                self.encryption.stop()
-                return None            
+                    return None            
 
         else:
             what_type = 'OTR'
@@ -299,11 +327,10 @@ class MessageSession(object):
         if message.timestamp is None:
             message.timestamp = ISOTimestamp.now()
  
-        content_type = 'text/plain'
         additional_cpim_headers = []
         additional_sip_headers = []
 
-        if self.account.sms.enable_imdn:
+        if self.account.sms.enable_imdn and message.content_type != IsComposingDocument.content_type:
             ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
             id = str(uuid.uuid4())
             additional_cpim_headers = [CPIMHeader('Message-ID', ns, id)]
@@ -311,10 +338,11 @@ class MessageSession(object):
         if self.use_cpim:
             content_type = 'message/cpim'
             payload = CPIMPayload(message.content,
-                                  content_type, 
+                                  message.content_type, 
                                   charset='utf-8', 
                                   sender=ChatIdentity(self.account.uri, self.account.display_name),
-                                  recipients=[ChatIdentity(self.remote_uri, None)])
+                                  recipients=[ChatIdentity(self.remote_uri, None)],
+                                  additional_headers=additional_headers)
         else:
             payload = SimplePayload(message.content, message.content_type, charset)
 
@@ -334,46 +362,86 @@ class MessageSession(object):
         message_request.send(15)
         call_id = message_request._request.call_id.decode()
         message.call_id = call_id
+        ui = UI()
         
         if message.id != 'OTR':
             if '?OTR:' in content.decode():
-                show_notice('Encrypted message %s sent to %s' % (call_id, self.route.uri))
+                if message.content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
+                    ui.status = 'Encrypted message sent to %s' % self.route.uri
+                    reactor.callLater(2, setattr, ui, 'status', None)
                 message.encrypted = True
             else:
-                show_notice('Message %s sent to %s' % (call_id, self.route.uri))
+                if message.content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
+                    ui.status = 'Message sent to %s' % (self.route.uri)
+                    reactor.callLater(3, setattr, ui, 'status', None)
+
         else:
-            show_notice('OTR message %s sent' % call_id)
+            ui.status = 'OTR message %s sent' % call_id
+            reactor.callLater(3, setattr, ui, 'status', None)
 
-
-    def handle_incoming(self, from_header, content_type, data, call_id):
+    def handle_incoming_message(self, from_header, content_type, data, call_id):
         self.msg_id = self.msg_id + 1
         
+        cpim_imdn_events = None
+        imdn_timestamp = None
+        imdn_id = None
+
         if content_type == 'message/cpim':
             try:
-                payload = CPIMPayload.decode(data)
+                cpim_message = CPIMPayload.decode(data)
             except CPIMParserError as e:
                 show_notice('CPIM parse error: %s' % str(e))
                 return None
             else:
+                content = cpim_message.content
+                payload = cpim_message
+                content_type = cpim_message.content_type
 
-                if payload.sender:
-                    identity = '%s@%s' % (payload.sender.uri.user.decode(), payload.sender.uri.host.decode())
-                    if from_header.uri == payload.sender.uri:
-                        if payload.sender.display_name:
-                            identity = '"%s" <%s>' % (payload.sender.display_name, identity)
+                if cpim_message.sender:
+                    identity = '%s@%s' % (cpim_message.sender.uri.user.decode(), cpim_message.sender.uri.host.decode())
+                    if from_header.uri == cpim_message.sender.uri:
+                        if cpim_message.sender.display_name:
+                            identity = '"%s" <%s>' % (cpim_message.sender.display_name, identity)
                         elif from_header.display_name:
                             identity = '"%s" <%s>' % (from_header.display_name, identity)
                 else:
                     identity = from_header
+                    
+                sender_identity = cpim_message.sender or data.from_header
+                imdn_timestamp = cpim_message.timestamp
+
+                for h in cpim_message.additional_headers:
+                    if h.name == "Message-ID":
+                        imdn_id = h.value
+                    if h.name == "Disposition-Notification":
+                        cpim_imdn_events = h.value
+                        
+                if content_type == IMDNDocument.content_type:
+                    document = IMDNDocument.parse(content)
+                    imdn_message_id = document.message_id.value
+                    imdn_status = document.notification.status.__str__()
+                    ui = UI()
+                    ui.status = "message %s was %s" % (imdn_message_id, imdn_status)
+                    reactor.callLater(2, setattr, ui, 'status', None)
+                    return
+
             
         else:
             payload = SimplePayload.decode(data, content_type)
             from_header = FromHeader.new(from_header)
             identity = '%s@%s' % (from_header.uri.user.decode(), from_header.uri.host.decode())
+            content = payload.content
+            content_type = payload.content_type
 
-        content = payload.content
-        content_type = payload.content_type
+        if cpim_imdn_events and imdn_timestamp:
+            if self.account.sms.enable_imdn:
+                if 'delivery' in cpim_imdn_events:
+                    self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'delivered')
 
+                if 'display' in cpim_imdn_events:
+                    self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
+                
+#        if content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
         try:
             content = self.encryption.otr_session.handle_input(content, content_type)
         except IgnoreMessage:
@@ -398,6 +466,7 @@ class MessageSession(object):
 
         return (content_type, content, identity, self.msg_id, encrypted)
 
+
     def _NH_SIPMessageDidSucceed(self, notification):
         self.notification_center.remove_observer(self, sender=notification.sender)
 
@@ -414,12 +483,20 @@ class MessageSession(object):
         if message.id in (None, 'OTR'):
             return
         
+        if message.content_type in (IsComposingDocument.content_type, IMDNDocument.content_type):
+            return
+        
+        ui = UI()
+        
         if notification.data.code == 202:
-            show_notice('%s Message %s to %s will be delivered later by the server' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri))
+            ui.status = 'Message %s to %s will be delivered later by the server' % (message.id, self.remote_uri)
+            reactor.callLater(4, setattr, ui, 'status', None)
         elif notification.data.code == 200:
-            show_notice('%s Message %s received by %s' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri))
+            ui.status = 'Message %s received by %s' % (message.id, self.remote_uri)
+            reactor.callLater(4, setattr, ui, 'status', None)
         else:
-            show_notice('%s Message %s received by %s (code %d)' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri, notification.data.code ))
+            ui.status = 'Message %s received by %s (code %d)' % (message.id, self.remote_uri, notification.data.code)
+            reactor.callLater(4, setattr, ui, 'status', None)
         
 
     def _NH_SIPMessageDidFail(self, notification):
@@ -1706,7 +1783,7 @@ class SIPSessionApplication(SIPApplication):
 
         content_type = data.content_type
 
-        if content_type not in ('text/plain', 'text/html', 'message/cpim', 'application/im-iscomposing+xml'):
+        if content_type not in ('text/plain', 'text/html', 'message/cpim', IsComposingDocument.content_type):
             return
 
         account = AccountManager().find_account(data.request_uri)
@@ -1723,13 +1800,13 @@ class SIPSessionApplication(SIPApplication):
 
         message_session = self.message_session(identity, account=account, route=route)
 
-        parsed_payload = message_session.handle_incoming(data.from_header, content_type, data.body, call_id)
+        parsed_payload = message_session.handle_incoming_message(data.from_header, content_type, data.body, call_id)
 
         if parsed_payload is None:
             return
             
         (content_type, content, identity, msg_id, encrypted) = parsed_payload            
-        if content_type == 'application/im-iscomposing+xml':
+        if content_type == IsComposingDocument.content_type:
             # body must not be utf-8 decoded
             msg = IsComposingMessage.parse(content)
             state = msg.state.value
@@ -1751,7 +1828,7 @@ class SIPSessionApplication(SIPApplication):
 
             is_composing = True
 
-        if content_type != 'application/im-iscomposing+xml':
+        if content_type != IsComposingDocument.content_type:
             self.message_session_to = identity
 
         if from_header.display_name:
@@ -1762,14 +1839,14 @@ class SIPSessionApplication(SIPApplication):
         if is_composing:
             ui = UI()
             ui.status = "%s is composing a message" % identity
-            reactor.callLater(2, setattr, ui, 'status', None)
+            reactor.callLater(4, setattr, ui, 'status', None)
         else:
             if encrypted:
                 show_notice("%s %s wrote: %s (%s encrypted)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
             else:
                 show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
 
-            if not encrypted and message_session.encryption.active and content_type != 'application/im-iscomposing+xml':
+            if not encrypted and message_session.encryption.active and content_type != IsComposingDocument.content_type:
                 show_notice("%s %s stopped the encryption" % (datetime.now().replace(microsecond=0), identity))
                 message_session.encryption.stop()
 

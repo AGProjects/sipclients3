@@ -19,7 +19,10 @@ class SoundsSettings(SettingsGroup):
 
 class SMSSettings(SettingsGroup):
     use_cpim = Setting(type=bool, default=True)
+    enable_composing = Setting(type=bool, default=True)
     enable_imdn = Setting(type=bool, default=True)
+    enable_otr = Setting(type=bool, default=False)
+
 
 
 class AccountExtension(SettingsObjectExtension):
