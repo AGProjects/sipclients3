@@ -143,7 +143,7 @@ class SubscriptionApplication(object):
         if self.account is None:
             raise RuntimeError("Unknown account %s. Available accounts: %s" % (self.account_name, ', '.join(account.id for account in account_manager.iter_accounts())))
         for account in account_manager.iter_accounts():
-            if account == self.account:
+            if account == self.account and account is not BonjourAccount():
                 account.sip.register = False
             else:
                 account.enabled = False
@@ -316,7 +316,7 @@ class SubscriptionApplication(object):
                                          b"conference",
                                          route_header,
                                          credentials=self.account.credentials,
-                                         refresh=self.account.sip.subscribe_interval)
+                                         refresh=180)
         notification_center = NotificationCenter()
         notification_center.add_observer(self, sender=self.subscription)
         try:
@@ -372,13 +372,13 @@ class SubscriptionApplication(object):
         lookup = DNSLookup()
         notification_center = NotificationCenter()
         notification_center.add_observer(self, sender=lookup)
-        if self.account.sip.outbound_proxy is not None:
-            uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
-        elif self.account.sip.always_use_my_proxy:
-            uri = SIPURI(host=self.account.id.domain)
-        else:
-            uri = self.target.uri
-        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name)
+        uri = self.target.uri
+        if self.account is not BonjourAccount():
+            if self.account.sip.outbound_proxy is not None:
+                uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
+            elif self.account.sip.always_use_my_proxy:
+                uri = SIPURI(host=self.account.id.domain)
+        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name if self.account is not BonjourAccount() else None)
 
     def _format_note(self, note):
         text = "Note"
