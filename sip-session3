@@ -746,10 +746,12 @@ class IncomingCallInitializer(object):
             ui.status = 'Accepting...'
         elif answer == 'r':
             self.session.reject()
-            ui.status = 'Rejecting...'
+            ui.status = 'Rejected'
+            reactor.callLater(3, setattr, ui, 'status', None)
         elif answer == 'b':
             self.session.reject(486)
-            ui.status = 'Sending Busy Here...'
+            ui.status = 'Sent Busy Here'
+            reactor.callLater(3, setattr, ui, 'status', None)
 
         if self.wave_ringtone:
             self.wave_ringtone.stop()
@@ -1259,7 +1261,8 @@ class IncomingTransferHandler(object):
             ui.status = 'Accepting...'
         elif answer == 'r':
             self.session.reject()
-            ui.status = 'Rejecting...'
+            ui.status = 'Rejected'
+            reactor.callLater(3, setattr, ui, 'status', None)
 
         if IncomingTransferHandler.sessions == 1:
             if self.wave_ringtone:
