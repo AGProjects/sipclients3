@@ -1,3 +1,16 @@
+sipclients (5.2.0) unstable; urgency=medium
+
+  * Added CPIM and IMDN payloads to sip-message
+  * Added CPIM and IMDN payloads to sip-session
+  * Fixed displaying conference info payload
+  * Removed per account TLS settings
+  * Do not save logging attributes changed on the fly
+  * Fixed decoding SIP trace data
+  * Fixed setting tls_name for bonjour account
+  * Start subscriptions only after the core has started
+
+ -- Adrian Georgescu <ag@ag-ag-projects.com>  Wed, 09 Jun 2021 14:19:37 +0200
+
 sipclients (4.1.0) unstable; urgency=medium
 
   * Added sip-subscribe-conference script
