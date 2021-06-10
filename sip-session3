@@ -1543,7 +1543,7 @@ class SIPSessionApplication(SIPApplication):
             reason = reason + " transport=%s" % notification.data.transport
 
         if hasattr(notification.data, 'credentials'):     
-            reason = reason + " verify_server=%s" % notification.data.credentials.verify_server
+            reason = reason + " verify_server=%s" % notification.data.credentials.verify_peer
         show_notice('%s media stream failed: %s\n' % (notification.sender.type, reason))
 
     def _NH_SIPApplicationDidStart(self, notification):
