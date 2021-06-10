@@ -208,7 +208,7 @@ class MessageSession(object):
         else:
             uri = self.target_uri
 
-        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name if self.account is not BonjourAccount() else None)
+        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name or uri.host)
 
     def handle_notification(self, notification):
         if self.ended:
@@ -582,7 +582,7 @@ class OutgoingCallInitializer(object):
                 uri = self.target
 
             show_notice('DNS lookup for %s' % uri)
-            lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name if self.account is not BonjourAccount() else None)
+            lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name or uri.host)
 
     def handle_notification(self, notification):
         handler = getattr(self, '_NH_%s' % notification.name, Null)
@@ -682,7 +682,8 @@ class OutgoingCallInitializer(object):
         elif notification.data.failure_reason == 'user request':
             show_notice('SIP session rejected by user (%d %s)' % (notification.data.code, notification.data.reason))
         else:
-            show_notice('SIP session failed: %s' % notification.data.failure_reason)
+            pass
+            #show_notice('SIP session failed: %s' % notification.data.failure_reason)
 
 
 @implementer(IObserver)
@@ -1065,7 +1066,8 @@ class OutgoingTransferHandler(object):
             uri = SIPURI(host=self.account.id.domain)
         else:
             uri = self.target
-        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name if self.account is not BonjourAccount() else None)
+
+        lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name or uri.host)
 
     def _terminate(self, failure_reason=None):
         notification_center = NotificationCenter()
