@@ -298,7 +298,7 @@ class SubscriptionApplication(object):
                 i = 1
                 for user in conference_info.users:
                     media = list(str(media.media_type) for media in chain(*user))
-                    print("%d. %s <%s> with %s" % (i, user.display_text.value if user.display_text else user.entity.uri, user.entity.split(":")[1], ", ".join(media)))
+                    print("%d. %s <%s> with %s" % (i, user.display_text.value if user.display_text else user.entity, user.entity.split(":")[1], ", ".join(media)))
                     i += 1
                     
                 
