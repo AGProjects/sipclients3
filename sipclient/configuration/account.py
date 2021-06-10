@@ -1,12 +1,12 @@
 
 """SIP SIMPLE Client account settings extensions"""
 
-__all__ = ['AccountExtension']
+__all__ = ['AccountExtension', 'BonjourAccountExtension']
 
 from sipsimple.configuration import Setting, SettingsGroup, SettingsObjectExtension
-from sipsimple.account import RTPSettings
-
+from sipsimple.account import RTPSettings, BonjourMSRPSettings, BonjourSIPSettings
 from sipclient.configuration.datatypes import AccountSoundFile
+from sipsimple.configuration.datatypes import MSRPTransport, SIPTransport
 
 
 class RTPSettingsExtension(RTPSettings):
@@ -24,6 +24,14 @@ class SMSSettings(SettingsGroup):
     enable_otr = Setting(type=bool, default=False)
 
 
+class BonjourMSRPSettingsExtension(BonjourMSRPSettings):
+    transport = Setting(type=MSRPTransport, default='tls')
+
+
+class BonjourSIPSettingsExtension(BonjourSIPSettings):
+    transport = Setting(type=SIPTransport, default='tls')
+    tls_name = Setting(type=str, default='Blink')
+
 
 class AccountExtension(SettingsObjectExtension):
     rtp = RTPSettingsExtension
@@ -31,4 +39,10 @@ class AccountExtension(SettingsObjectExtension):
     sms = SMSSettings
 
 
+class BonjourAccountExtension(SettingsObjectExtension):
+    sip = BonjourSIPSettingsExtension
+    msrp = BonjourMSRPSettingsExtension
+    rtp = RTPSettingsExtension
+    sounds = SoundsSettings
+    sms = SMSSettings
     
