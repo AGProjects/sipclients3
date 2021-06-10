@@ -26,7 +26,7 @@ from sipsimple.core import Engine
 from sipsimple.storage import FileStorage
 
 from sipclient.configuration import config_directory
-from sipclient.configuration.account import AccountExtension
+from sipclient.configuration.account import AccountExtension, BonjourAccountExtension
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
 from sipclient.system import IPAddressMonitor, copy_default_certificates
@@ -120,7 +120,7 @@ class RegistrationApplication(SIPApplication):
         log.level.current = log.level.WARNING # get rid of twisted messages
 
         Account.register_extension(AccountExtension)
-        BonjourAccount.register_extension(AccountExtension)
+        BonjourAccount.register_extension(BonjourAccountExtension)
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         try:
             SIPApplication.start(self, FileStorage(options.config_directory or config_directory))

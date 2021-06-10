@@ -18,7 +18,7 @@ from sipsimple.storage import FileStorage
 from sipsimple.threading import ThreadManager
 
 from sipclient.configuration import config_directory
-from sipclient.configuration.account import AccountExtension
+from sipclient.configuration.account import AccountExtension, BonjourAccountExtension
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 
 
@@ -136,7 +136,7 @@ class SettingsParser(object):
 class AccountConfigurator(object):
     def __init__(self):
         Account.register_extension(AccountExtension)
-        BonjourAccount.register_extension(AccountExtension)
+        BonjourAccount.register_extension(BonjourAccountExtension)
         self.configuration_manager = ConfigurationManager()
         self.configuration_manager.start()
         self.account_manager = AccountManager()

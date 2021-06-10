@@ -56,7 +56,7 @@ from sipsimple.threading.green import run_in_green_thread
 from sipsimple.util import ISOTimestamp
 
 from sipclient.configuration import config_directory
-from sipclient.configuration.account import AccountExtension
+from sipclient.configuration.account import AccountExtension, BonjourAccountExtension
 from sipclient.configuration.datatypes import ResourcePath
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
@@ -1451,7 +1451,7 @@ class SIPSessionApplication(SIPApplication):
         ui.start(control_bindings=control_bindings, display_text=False)
 
         Account.register_extension(AccountExtension)
-        BonjourAccount.register_extension(AccountExtension)
+        BonjourAccount.register_extension(BonjourAccountExtension)
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         
         try:

@@ -41,7 +41,7 @@ from sipsimple.streams import MediaStreamRegistry
 from sipsimple.storage import FileStorage
 
 from sipclient.configuration import config_directory
-from sipclient.configuration.account import AccountExtension
+from sipclient.configuration.account import AccountExtension, BonjourAccountExtension
 from sipclient.configuration.datatypes import ResourcePath
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
@@ -228,7 +228,7 @@ class SIPAudioApplication(SIPApplication):
         log.level.current = log.level.WARNING # get rid of twisted messages
 
         Account.register_extension(AccountExtension)
-        BonjourAccount.register_extension(AccountExtension)
+        BonjourAccount.register_extension(BonjourAccountExtension)
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         
         self.config_directory = options.config_directory or config_directory

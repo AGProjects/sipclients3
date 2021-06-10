@@ -113,7 +113,7 @@ class WinfoApplication(object):
     
         # startup configuration
         Account.register_extension(AccountExtension)
-        BonjourAccount.register_extension(AccountExtension)
+        BonjourAccount.register_extension(BonjourAccountExtension)
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         SIPApplication.storage = FileStorage(config_directory)
         try:

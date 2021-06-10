@@ -35,7 +35,7 @@ from sipsimple.storage import FileStorage
 from sipsimple.threading import run_in_twisted_thread
 
 from sipclient.configuration import config_directory
-from sipclient.configuration.account import AccountExtension
+from sipclient.configuration.account import AccountExtension, BonjourAccountExtension
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
 
@@ -123,7 +123,7 @@ class SubscriptionApplication(object):
 
         # startup configuration
         Account.register_extension(AccountExtension)
-        BonjourAccount.register_extension(AccountExtension)
+        BonjourAccount.register_extension(BonjourAccountExtension)
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         SIPApplication.storage = FileStorage(config_directory)
         try:
