@@ -23,6 +23,10 @@ from application.notification import IObserver, NotificationCenter
 from application.python.queue import EventQueue
 from application.python import Null
 from eventlib import api
+
+from gnutls.errors import GNUTLSError
+from gnutls.crypto import X509Certificate, X509PrivateKey
+
 from twisted.internet import reactor
 from zope.interface import implementer
 
@@ -1519,6 +1523,16 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_TLSTransportHasChanged(self, notification):
         show_notice('TLS verify server: %s\n' % notification.data.verify_server)
+        show_notice('TLS certificate: %s\n' % notification.data.certificate)
+        if notification.data.certificate:
+            try:
+                contents = open(os.path.expanduser(notification.data.certificate), 'rb').read()
+                certificate = X509Certificate(contents) # validate the certificate
+            except (GNUTLSError, OSError) as e:
+                show_notice('Cannot read TLS certificate: %s\n' % str(e))
+                pass
+            else:
+                show_notice('TLS Subject: %s\n' % certificate.subject)
 
     def _NH_MediaStreamDidFail(self, notification):
         reason = notification.data.reason

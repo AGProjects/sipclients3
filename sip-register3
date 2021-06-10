@@ -15,6 +15,8 @@ from time import sleep
 from application import log
 from application.notification import NotificationCenter, NotificationData
 from application.python.queue import EventQueue
+from gnutls.errors import GNUTLSError
+from gnutls.crypto import X509Certificate, X509PrivateKey
 
 from sipsimple.account import Account, AccountManager, BonjourAccount
 from sipsimple.application import SIPApplication
@@ -109,6 +111,7 @@ class RegistrationApplication(SIPApplication):
         notification_center.add_observer(self, sender=self.input)
         notification_center.add_observer(self, name='SIPSessionNewIncoming')
         notification_center.add_observer(self, name='DNSLookupDidSucceed')
+        notification_center.add_observer(self, name='TLSTransportHasChanged')
 
         if self.input:
             self.input.start()
@@ -303,6 +306,19 @@ class RegistrationApplication(SIPApplication):
         else:
             self.output.put('%s Failed to register contact for sip:%s: %s\n' % (datetime.now().replace(microsecond=0), self.account.id, reason))
             self.stop()
+
+    def _NH_TLSTransportHasChanged(self, notification):
+        self.output.put('TLS verify server: %s\n' % notification.data.verify_server)
+        self.output.put('TLS certificate: %s\n' % notification.data.certificate)
+        if notification.data.certificate:
+            try:
+                contents = open(os.path.expanduser(notification.data.certificate), 'rb').read()
+                certificate = X509Certificate(contents) # validate the certificate
+            except (GNUTLSError, OSError) as e:
+                self.output.put('Cannot read TLS certificate: %s\n' % str(e))
+                pass
+            else:
+                self.output.put('TLS Subject: %s\n' % certificate.subject)
 
     def _NH_SIPAccountRegistrationDidEnd(self, notification):
         self.output.put('%s Registration ended.\n' % datetime.now().replace(microsecond=0))
