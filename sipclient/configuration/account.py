@@ -5,7 +5,7 @@ __all__ = ['AccountExtension', 'BonjourAccountExtension']
 
 from sipsimple.configuration import Setting, SettingsGroup, SettingsObjectExtension
 from sipsimple.account import RTPSettings, BonjourMSRPSettings, BonjourSIPSettings
-from sipclient.configuration.datatypes import AccountSoundFile
+from sipclient.configuration.datatypes import AccountSoundFile, Hostname
 from sipsimple.configuration.datatypes import MSRPTransport, SIPTransport
 
 
@@ -33,10 +33,22 @@ class BonjourSIPSettingsExtension(BonjourSIPSettings):
     tls_name = Setting(type=str, default='Blink')
 
 
+class ConferenceSettings(SettingsGroup):
+    server_address = Setting(type=Hostname, default=None, nillable=True)
+    nickname = Setting(type=str, default='', nillable=True)
+    tls_name = Setting(type=str, default=None, nillable=True)
+
+
+class BonjourConferenceSettings(SettingsGroup):
+    nickname = Setting(type=str, default='', nillable=True)
+    tls_name = Setting(type=str, default='Sylkserver', nillable=True)
+
+
 class AccountExtension(SettingsObjectExtension):
     rtp = RTPSettingsExtension
     sounds = SoundsSettings
     sms = SMSSettings
+    conference = ConferenceSettings
 
 
 class BonjourAccountExtension(SettingsObjectExtension):
@@ -45,4 +57,5 @@ class BonjourAccountExtension(SettingsObjectExtension):
     rtp = RTPSettingsExtension
     sounds = SoundsSettings
     sms = SMSSettings
+    conference = BonjourConferenceSettings
     

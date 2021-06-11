@@ -6,6 +6,7 @@ import platform
 import select
 import shutil
 import signal
+import re
 import sys
 import termios
 import uuid
@@ -412,16 +413,33 @@ class SIPAudioApplication(SIPApplication):
                 notification_center = NotificationCenter()
                 settings = SIPSimpleSettings()
                 notification_center.add_observer(self, sender=lookup)
-                if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
-                    uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
-                elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
-                    uri = SIPURI(host=self.account.id.domain)
-                else:
-                    uri = self.target
-
+                
                 self.session_spool_dir = self.spool_dir + "/" + (self.options.external_id or str(uuid.uuid1()))
 
-                lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=self.account.sip.tls_name or uri.host)
+                if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
+                    uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
+                    tls_name = self.account.sip.tls_name or proxy.host
+                elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
+                    uri = SIPURI(host=self.account.id.domain)
+                    tls_name = self.account.sip.tls_name or self.account.id.domain
+                else:
+                    uri = self.target
+                    tls_name = uri.host
+                    if self.account is not BonjourAccount():
+                        if self.account.id.domain == uri.host.decode():
+                            tls_name = self.account.sip.tls_name or self.account.id.domain
+                        elif "isfocus" in str(uri) and uri.host.decode().endswith(self.account.id.domain):
+                            tls_name = self.account.conference.tls_name or self.account.sip.tls_name or self.account.id.domain
+                    else:
+                        is_ip_address = re.match("^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", uri.host.decode()) or ":" in uri.host.decode()
+                        if "isfocus" in str(uri) and self.account.conference.tls_name:
+                            tls_name = self.account.conference.tls_name
+                        elif  is_ip_address and  self.account.sip.tls_name:
+                            tls_name = self.account.sip.tls_name
+                    
+                self.output.put('DNS lookup for %s' % uri)
+
+                lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=tls_name)
 
                 try:
                     makedirs(self.session_spool_dir)
