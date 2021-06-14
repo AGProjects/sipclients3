@@ -197,9 +197,10 @@ class RegistrationApplication(SIPApplication):
         engine.log_level = settings.logs.pjsip_level if (self.logger.pjsip_to_stdout or settings.logs.trace_pjsip) else 0
 
         if settings.tls.ca_list is None:
-            self.output.put('Initializing default TLS certificates and settings')
+            self.output.put('Initializing default TLS certificates and settings\n')
             copy_default_certificates()
             settings.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
+            settings.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
             settings.tls.verify_server = True
             settings.save()
 
@@ -309,6 +310,7 @@ class RegistrationApplication(SIPApplication):
 
     def _NH_TLSTransportHasChanged(self, notification):
         self.output.put('TLS verify server: %s\n' % notification.data.verify_server)
+        self.output.put('TLS ca list: %s\n' % notification.data.ca_file)
         self.output.put('TLS certificate: %s\n' % notification.data.certificate)
         if notification.data.certificate:
             try:

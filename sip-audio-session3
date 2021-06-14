@@ -386,6 +386,7 @@ class SIPAudioApplication(SIPApplication):
             copy_default_certificates()
             self.output.put('Initializing default TLS certificates and settings')
             settings.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
+            settings.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
             settings.tls.verify_server = True
             settings.save()
 

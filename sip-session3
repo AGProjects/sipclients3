@@ -1569,6 +1569,7 @@ class SIPSessionApplication(SIPApplication):
             show_notice('Initializing default TLS certificates and settings')
             copy_default_certificates()
             settings.tls.ca_list = os.path.join(config_directory, 'tls/ca.crt')
+            settings.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
             settings.tls.verify_server = True
             settings.save()
 
