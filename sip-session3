@@ -130,11 +130,10 @@ class OTRInternalMessage(QueuedMessage):
 @implementer(IObserver)
 class MessageSession(object):
     
-    def __init__(self, account, target, route=None, use_cpim=False):
+    def __init__(self, account, target, route=None):
         self.account = account
         self.target = target
         self.routes = None
-        self.use_cpim = use_cpim
         self.msg_id = 0
         self.started = False
         self.msg_map = {}
@@ -348,19 +347,27 @@ class MessageSession(object):
         additional_cpim_headers = []
         additional_sip_headers = []
 
-        if self.account.sms.enable_imdn and message.content_type != IsComposingDocument.content_type:
-            ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
-            id = str(uuid.uuid4())
-            additional_cpim_headers = [CPIMHeader('Message-ID', ns, id)]
-                
-        if self.use_cpim:
+        if self.account.sms.use_cpim:
+            if self.account.sms.enable_imdn and message.content_type != IsComposingDocument.content_type:
+                ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
+
+                if message.content_type == IMDNDocument.content_type:
+                    # respond to IMDN requests
+                    additional_cpim_headers = [CPIMHeader('Message-ID', ns, str(uuid.uuid4()))]
+
+                elif message.content_type != IsComposingDocument.content_type:
+                    # request IMDN
+                    additional_cpim_headers = [CPIMHeader('Message-ID', ns, message.id)]
+                    additional_cpim_headers.append(CPIMHeader('Disposition-Notification', ns, 'positive-delivery, display'))
+
             content_type = 'message/cpim'
             payload = CPIMPayload(message.content,
                                   message.content_type, 
                                   charset='utf-8', 
+                                  timestamp=message.timestamp,
                                   sender=ChatIdentity(self.account.uri, self.account.display_name),
                                   recipients=[ChatIdentity(self.remote_uri, None)],
-                                  additional_headers=additional_headers)
+                                  additional_headers=additional_cpim_headers)
         else:
             payload = SimplePayload(message.content, message.content_type, charset)
 
@@ -383,7 +390,7 @@ class MessageSession(object):
         ui = UI()
         
         if message.id != 'OTR':
-            if '?OTR:' in content.decode():
+            if '?OTR:' in content:
                 if message.content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
                     ui.status = 'Encrypted message sent to %s' % self.route.uri
                     reactor.callLater(2, setattr, ui, 'status', None)
@@ -439,8 +446,10 @@ class MessageSession(object):
                     imdn_message_id = document.message_id.value
                     imdn_status = document.notification.status.__str__()
                     ui = UI()
-                    ui.status = "message %s was %s" % (imdn_message_id, imdn_status)
+                    msg = "Message %s was %s" % (imdn_message_id, imdn_status)
+                    ui.status = msg
                     reactor.callLater(2, setattr, ui, 'status', None)
+                    show_notice(msg)
                     return
 
             
