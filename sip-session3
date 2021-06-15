@@ -369,7 +369,12 @@ class MessageSession(object):
 
         content, content_type = payload.encode()
 
-        message_request = Message(FromHeader(self.account.uri, self.account.display_name), 
+        from_uri = self.account.uri
+        if self.account is BonjourAccount():
+            settings = SIPSimpleSettings()
+            from_uri.parameters['instance_id'] = settings.instance_id
+
+        message_request = Message(FromHeader(from_uri, self.account.display_name), 
                                   ToHeader(self.target_uri),
                                   RouteHeader(self.route.uri),
                                   content_type,
