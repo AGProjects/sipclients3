@@ -1529,10 +1529,10 @@ class SIPSessionApplication(SIPApplication):
         settings = SIPSimpleSettings()
         ui = UI()
 
-        settings.logs.trace_sip = self.options.trace_sip
-        settings.logs.trace_msrp = self.options.trace_msrp
-        settings.logs.trace_pjsip = self.options.trace_pjsip
-        settings.logs.trace_notifications = self.options.trace_notifications
+        settings.logs.trace_sip = self.options.trace_sip or settings.logs.trace_sip
+        settings.logs.trace_msrp = self.options.trace_msrp or settings.logs.trace_msrp
+        settings.logs.trace_pjsip = self.options.trace_pjsip or settings.logs.trace_pjsip
+        settings.logs.trace_notifications = self.options.trace_notifications or settings.logs.trace_notifications
 
         for account in account_manager.iter_accounts():
             if isinstance(account, Account):
