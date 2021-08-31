@@ -286,6 +286,7 @@ class MessageSession(object):
 
     @run_in_green_thread           
     def send_imdn_notification(self, imdn_id, imdn_timestamp, recipient, sender_identity, event):
+        show_notice('Send %s notification for %s' % (event, imdn_id))
         if event == 'delivered':
             notification = DeliveryNotification('delivered')
         elif event == 'displayed':
