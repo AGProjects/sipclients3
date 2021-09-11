@@ -202,7 +202,7 @@ class MessageSession(object):
 
         if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
             uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
-            tls_name = self.account.sip.tls_name or proxy.host
+            tls_name = self.account.sip.tls_name or self.account.sip.outbound_proxy.host
         elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
             uri = SIPURI(host=self.account.id.domain)
             tls_name = self.account.sip.tls_name or self.account.id.domain
@@ -602,7 +602,7 @@ class OutgoingCallInitializer(object):
 
             if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
                 uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
-                tls_name = self.account.sip.tls_name or proxy.host
+                tls_name = self.account.sip.tls_name or self.account.sip.outbound_proxy.host
             elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
                 uri = SIPURI(host=self.account.id.domain)
                 tls_name = self.account.sip.tls_name or self.account.id.domain
@@ -1103,7 +1103,7 @@ class OutgoingTransferHandler(object):
 
         if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
             uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
-            tls_name = self.account.sip.tls_name or proxy.host
+            tls_name = self.account.sip.tls_name or self.account.sip.outbound_proxy.host
         elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
             uri = SIPURI(host=self.account.id.domain)
             tls_name = self.account.sip.tls_name or self.account.id.domain
