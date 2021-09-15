@@ -1,3 +1,12 @@
+sipclients (5.2.3) unstable; urgency=medium
+
+  * Fixed reading proxy setting
+  * Log changes
+  * Added options to disable cpim and set content type of SIP message
+  * Fixed init logging settings in sip-session
+
+ -- Adrian Georgescu <ag@ag-projects.com>  Wed, 15 Sep 2021 10:42:21 -0300
+
 sipclients (5.2.2) unstable; urgency=medium
 
   * Added instance_id to Bonjour Message from header 
