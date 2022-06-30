@@ -888,7 +888,7 @@ class SIPAudioApplication(SIPApplication):
                                                                                stream.remote_rtp_address, 
                                                                                stream.remote_rtp_port))
                 if stream.encryption.active:
-                    self.output.put('%s stream is encrypted using %s (%s)\n' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode()))
+                    self.output.put('%s stream is encrypted using %s (%s)\n' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
 
             
         self.started_sessions.append(session)
@@ -1155,7 +1155,7 @@ class SIPAudioApplication(SIPApplication):
         self.output.put('Audio stream using "%s" codec at %sHz\n' % (stream.codec, stream.sample_rate))
         self.output.put('Audio RTP endpoints %s:%d <-> %s:%d\n' % (stream.local_rtp_address, stream.local_rtp_port, stream.remote_rtp_address, stream.remote_rtp_port))
         if stream.encryption.active:
-            self.output.put('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher.decode()))
+            self.output.put('RTP audio stream is encrypted using %s (%s)\n' % (stream.encryption.type, stream.encryption.cipher))
 
     def _NH_RTPStreamZRTPLog(self, notification):
         if 'Dropping packet' in notification.data.message:
@@ -1164,7 +1164,7 @@ class SIPAudioApplication(SIPApplication):
 
     def _NH_RTPStreamDidEnableEncryption(self, notification):
         stream = notification.sender
-        self.output.put("%s encryption activated using %s (%s)\n" % (stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode()))
+        self.output.put("%s encryption activated using %s (%s)\n" % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
 
         if stream.encryption.type == 'ZRTP':
             peer_name = stream.encryption.zrtp.peer_name if stream.encryption.zrtp.peer_name else None
