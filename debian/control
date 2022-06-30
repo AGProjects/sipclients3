@@ -18,7 +18,8 @@ Depends: ${python3:Depends}, ${misc:Depends},
          python3-lxml,
          python3-sipsimple (>= 5.2.0),
          python3-twisted,
-         python3-zope.interface
+         python3-zope.interface,
+         python3-pgpy
 Description: SIP SIMPLE Command Line Clients
  This package contains Command Line Clients for testing SIP SIMPLE client
  SDK from http://sipsimpleclient.org. They demonstrate the SDK capabilities
