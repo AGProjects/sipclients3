@@ -34,7 +34,7 @@ from sipsimple.audio import WavePlayer
 from sipsimple.application import SIPApplication
 from sipsimple.configuration import ConfigurationError
 from sipsimple.configuration.settings import SIPSimpleSettings
-from sipsimple.core import Engine, SIPCoreError, SIPURI, ToHeader, CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
+from sipsimple.core import Engine, SIPCoreError, SIPURI, ToHeader, Header, CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
 from sipsimple import __version__ as version
 from sipsimple.lookup import DNSLookup
 from sipsimple.session import Session

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import os
 import re
 import signal
@@ -8,6 +9,7 @@ import urllib.request, urllib.parse, urllib.error
 import random
 import requests
 import uuid
+import pgpy
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -19,6 +21,7 @@ from threading import Event, Thread
 from time import sleep
 
 from application import log
+from application.system import makedirs
 from application.notification import IObserver, NotificationCenter
 from application.python.queue import EventQueue
 from application.python import Null
@@ -787,9 +790,15 @@ class IncomingCallInitializer(object):
         answer = notification.data.answer
         self.question = None
         if answer == 'a':
+            if self.received_private_key:
+                show_notice('Please enter password to decrypt the key:')
+                return
             self.session.accept(self.session.proposed_streams)
             ui.status = 'Accepting...'
         elif answer == 'r':
+            if self.received_private_keys:
+                self.received_private_keys = None
+                return
             self.session.reject()
             ui.status = 'Rejected'
             reactor.callLater(3, setattr, ui, 'status', None)
@@ -1415,6 +1424,9 @@ class SIPSessionApplication(SIPApplication):
         self.received_message_ids = set()
         
         self.message_sessions = set()
+        self.received_private_key = None
+        self.private_keys = {}
+        self.public_keys = {}
 
         self.ip_address_monitor = IPAddressMonitor()
         self.logger = None
@@ -1439,6 +1451,9 @@ class SIPSessionApplication(SIPApplication):
         ui = UI()
 
         history_file = os.path.join(config_directory, 'input.history')
+        self.keys_path = os.path.join(config_directory, 'keys')
+        makedirs(self.keys_path)
+        
         ui.input.add_history(history_file)
 
         self.options = options
@@ -1695,12 +1710,66 @@ class SIPSessionApplication(SIPApplication):
         else:
             show_notice('%s stream is relayed by server' % stream.type)
 
+    def handle_private_keys(self, password, key):
+        account = key['account']
+        private_key_encrypted = key['private_key']
+        public_key = key['public_key']
 
+        try:
+            pgpMessage = pgpy.PGPMessage.from_blob(private_key_encrypted.encode())
+            decryptedKeyPair = pgpMessage.decrypt(password)
+            private_key = decryptedKeyPair.message
+
+            private_key_path = "%s/%s.privkey" % (self.keys_path, account.id)
+            fd = open(private_key_path, "wb+")
+            fd.write(private_key.encode())
+            fd.close()
+
+            show_notice("Private key saved to %s" % private_key_path)
+
+            public_key_path = "%s/%s.pubkey" % (self.keys_path, account.id)
+            fd = open(public_key_path, "wb+")
+            fd.write(public_key.encode())
+            fd.close()
+
+            show_notice("Public key saved to %s" % public_key_path)
+
+            account.sms.private_key = private_key_path
+            account.sms.public_key = public_key_path
+            account.sms.public_key_checksum = hashlib.sha1(public_key.encode()).hexdigest()
+            account.save()
+
+        except Exception as e:
+            show_notice("Import private key failed: %s" % str(e))
+            
+    def get_public_key(self, uri):
+        public_key = None
+        try:
+            public_key = self.public_keys[uri]
+        except KeyError:
+            public_key_path = "%s/%s.pubkey" % (self.keys_path, uri)
+         
+            if os.path.exists(public_key_path):
+                try:
+                    public_key, _ = pgpy.PGPKey.from_file(public_key_path)
+                except Exception as e:
+                    pass
+                else:
+                    self.public_keys[uri] = public_key
+                    show_notice('PGP public key imported from %s' % public_key_path)
+        
+        return public_key
+            
     def _NH_UIInputGotText(self, notification):
         msrp_chat = None
         message_text = notification.data.text
         local_identity = '%s@%s' % (self.account.id.username, self.account.id.domain)
         encrypted = False
+
+        if self.received_private_key:
+            self.handle_private_keys(message_text, self.received_private_key)
+            self.received_private_key = None
+            return
 
         if self.active_session is not None:
             msrp_chat = next((stream for stream in self.active_session.streams if stream.type == 'chat'), None)
@@ -1868,6 +1937,10 @@ class SIPSessionApplication(SIPApplication):
         data = notification.data
 
         call_id = data.headers.get('Call-ID', Null).body
+        try:
+            instance_id = data.from_header.uri.parameters.get('instance_id', None).split(":")[2]
+        except (IndexError, AttributeError):
+            instance_id = None
 
         try:
             self.received_message_ids.remove(call_id)
@@ -1879,29 +1952,50 @@ class SIPSessionApplication(SIPApplication):
 
         content_type = data.content_type
 
-        if content_type not in ('text/plain', 'text/html', 'message/cpim', IsComposingDocument.content_type):
+        if content_type not in ('text/plain', 'text/html', 'message/cpim', IsComposingDocument.content_type, 'text/pgp-private-key', 'text/pgp-public-key'):
             return
 
-        account = AccountManager().find_account(data.request_uri)
+        account = AccountManager().find_account(data.to_header.uri)
         is_composing = False
+        private_key = None
 
+        try:
+            private_key = self.private_keys[account.id]
+        except KeyError:
+            try:
+                private_key, _ = pgpy.PGPKey.from_file(account.sms.private_key)
+            except Exception as e:
+                pass
+            else:
+                show_notice('PGP private key imported from %s' % account.sms.private_key)
+                self.private_keys[account.id] = private_key
+                
         from_header = FromHeader.new(data.from_header)
 
         identity = '%s@%s' % (from_header.uri.user.decode(), from_header.uri.host.decode())
+        remote_uri = identity
         if isinstance(account, BonjourAccount):
             via = data.headers.get('Via', Null)[0]
             route = Route(address=via.host, port=via.port, transport=via.transport.lower())
         else:
             route = None
 
-        message_session = self.message_session(identity, account=account, route=route)
+        if content_type not in ('text/pgp-private-key', 'text/pgp-public-key'):
+            message_session = self.message_session(identity, account=account, route=route)
+            parsed_payload = message_session.handle_incoming_message(data.from_header, content_type, data.body, call_id)
 
-        parsed_payload = message_session.handle_incoming_message(data.from_header, content_type, data.body, call_id)
+            if parsed_payload is None:
+                return
 
-        if parsed_payload is None:
-            return
-            
-        (content_type, content, identity, msg_id, encrypted) = parsed_payload            
+            (content_type, content, identity, msg_id, encrypted) = parsed_payload            
+        else:
+            content = data.body
+            encrypted = False
+            message_session = None
+
+        if content_type not in ('text/pgp-private-key', 'text/pgp-public-key', IsComposingDocument.content_type):
+            self.message_session_to = identity
+        
         if content_type == IsComposingDocument.content_type:
             # body must not be utf-8 decoded
             msg = IsComposingMessage.parse(content)
@@ -1924,14 +2018,13 @@ class SIPSessionApplication(SIPApplication):
 
             is_composing = True
 
-        if content_type != IsComposingDocument.content_type:
-            self.message_session_to = identity
 
         if from_header.display_name:
             identity = '"%s" <%s>' % (from_header.display_name, identity)
             
         content = content.decode() if isinstance(content, bytes) else content
-        
+        content = content.strip()
+
         if is_composing:
             ui = UI()
             ui.status = "%s is composing a message" % identity
@@ -1940,13 +2033,63 @@ class SIPSessionApplication(SIPApplication):
             if encrypted:
                 show_notice("%s %s wrote: %s (%s encrypted)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
             else:
-                show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+                if content_type == 'text/pgp-public-key':
+                    if content.startswith('-----BEGIN PGP PUBLIC KEY BLOCK-----') and content.endswith('-----END PGP PUBLIC KEY BLOCK-----'):
+                        public_key_path = "%s/%s.pubkey" % (self.keys_path, instance_id or remote_uri)
+                        fd = open(public_key_path, "wb+")
+                        fd.write(content.encode())
+                        fd.close()
+                        self.get_public_key(instance_id or remote_uri)
+                        show_notice("Public key saved to %s" % public_key_path)
+                        return
+            
+                if content_type == 'text/pgp-private-key':
+                    public_key = ''
+                    private_key_encrypted = ''
 
-            if not encrypted and message_session.encryption.active and content_type != IsComposingDocument.content_type:
+                    start_public = False
+                    start_private = False
+
+                    for l in content.split("\n"):
+                        if l == "-----BEGIN PGP PUBLIC KEY BLOCK-----":
+                            start_public = True
+
+                        if l == "-----BEGIN PGP MESSAGE-----":
+                            start_public = False
+                            start_private = True
+
+                        if start_public:
+                            public_key = public_key + l + "\n"
+
+                        if start_private:
+                            private_key_encrypted = private_key_encrypted + l + "\n"
+                            
+                    if private_key_encrypted and public_key:
+                        self.received_private_key = {'account': account, 'private_key': private_key_encrypted, 'public_key': public_key}
+                        self.question = Question("Private key received for account %s, do you want to import it? (a)ccept/(r)eject" % (account.id), 'ar', bold=True)
+                        notification_center = NotificationCenter()
+                        notification_center.add_observer(self, sender=self.question)
+                        ui = UI()
+                        ui.add_question(self.question)
+                else:
+                    if content.startswith('-----BEGIN PGP MESSAGE-----') and content.endswith('-----END PGP MESSAGE-----') and not private_key:
+                        show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, 'Received a PGP message for which we have no private key', msg_id))
+                    else:
+                        try:
+                            pgpMessage = pgpy.PGPMessage.from_blob(content.encode())
+                            decrypted_message = private_key.decrypt(pgpMessage)
+                        except (pgpy.errors.PGPDecryptionError, pgpy.errors.PGPError) as e:
+                            show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, 'PGP decrypt error', msg_id))
+                            return
+                        else:
+                            content = bytes(decrypted_message.message, 'latin1').decode()
+                            show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+
+            if not encrypted and message_session and message_session.encryption.active and content_type != IsComposingDocument.content_type:
                 show_notice("%s %s stopped the encryption" % (datetime.now().replace(microsecond=0), identity))
                 message_session.encryption.stop()
 
-            if content.startswith('?OTR:'):
+            if content.startswith('?OTR:') and message_session:
                 show_notice("%s %s encrypted message could not be read" % (datetime.now().replace(microsecond=0), identity))
                 message_session.encryption.stop()
 

@@ -22,7 +22,10 @@ class SMSSettings(SettingsGroup):
     enable_composing = Setting(type=bool, default=True)
     enable_imdn = Setting(type=bool, default=True)
     enable_otr = Setting(type=bool, default=False)
-
+    public_key = Setting(type=str, default=None, nillable=True)
+    private_key = Setting(type=str, default=None, nillable=True)
+    public_key_checksum = Setting(type=str, default=None, nillable=True)
+    
 
 class BonjourMSRPSettingsExtension(BonjourMSRPSettings):
     transport = Setting(type=MSRPTransport, default='tls')
@@ -31,7 +34,10 @@ class BonjourMSRPSettingsExtension(BonjourMSRPSettings):
 class BonjourSIPSettingsExtension(BonjourSIPSettings):
     transport = Setting(type=SIPTransport, default='tls')
     tls_name = Setting(type=str, default='Blink')
-
+    public_key = Setting(type=str, default=None, nillable=True)
+    private_key = Setting(type=str, default=None, nillable=True)
+    public_key_checksum = Setting(type=str, default=None, nillable=True)
+    
 
 class ConferenceSettings(SettingsGroup):
     server_address = Setting(type=Hostname, default=None, nillable=True)
