@@ -2081,6 +2081,8 @@ class SIPSessionApplication(SIPApplication):
                         except (pgpy.errors.PGPDecryptionError, pgpy.errors.PGPError) as e:
                             show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, 'PGP decrypt error', msg_id))
                             return
+                        except ValueError as e:
+                            show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
                         else:
                             content = bytes(decrypted_message.message, 'latin1').decode()
                             show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
