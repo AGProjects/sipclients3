@@ -1956,6 +1956,10 @@ class SIPSessionApplication(SIPApplication):
             return
 
         account = AccountManager().find_account(data.to_header.uri)
+        
+        if not account:
+            return
+
         is_composing = False
         private_key = None
 
