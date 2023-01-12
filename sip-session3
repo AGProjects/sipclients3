@@ -786,18 +786,19 @@ class IncomingCallInitializer(object):
     def _NH_UIQuestionGotAnswer(self, notification):
         notification_center = NotificationCenter()
         ui = UI()
+        application = SIPSessionApplication()
         notification_center.remove_observer(self, sender=notification.sender)
         answer = notification.data.answer
         self.question = None
         if answer == 'a':
-            if self.received_private_key:
+            if application.received_private_key:
                 show_notice('Please enter password to decrypt the key:')
                 return
             self.session.accept(self.session.proposed_streams)
             ui.status = 'Accepting...'
         elif answer == 'r':
-            if self.received_private_keys:
-                self.received_private_keys = None
+            if application.received_private_key:
+                application.received_private_key = None
                 return
             self.session.reject()
             ui.status = 'Rejected'
