@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import hashlib
+import glob
 import os
 import re
 import signal
@@ -570,14 +571,21 @@ OTRTransport.register(MessageSession)
 @implementer(IObserver)
 class OutgoingCallInitializer(object):
 
-    def __init__(self, account, target, audio=False, chat=False, video=False):
+    def __init__(self, account, target, audio=False, chat=False, video=False, play_file=None):
         self.account = account
         self.target = target
         self.streams = []
+        self.play_file = play_file
+        self.playback_wave_player = None
+
         if video:
             self.streams.append(MediaStreamRegistry.VideoStream())
         if audio:
-            self.streams.append(MediaStreamRegistry.AudioStream())
+            audio_stream = MediaStreamRegistry.AudioStream()
+            self.streams.append(audio_stream)
+            if self.play_file:
+                notification_center = NotificationCenter()
+                notification_center.add_observer(self, sender=audio_stream)
         if chat:
             self.streams.append(MediaStreamRegistry.ChatStream())
         self.wave_ringtone = None
@@ -660,7 +668,7 @@ class OutgoingCallInitializer(object):
         settings = SIPSimpleSettings()
         ui = UI()
         ringtone = settings.sounds.audio_outbound
-        if ringtone and self.wave_ringtone is None:
+        if ringtone and self.wave_ringtone is None and not self.play_file:
             self.wave_ringtone = WavePlayer(SIPApplication.voice_audio_mixer, ringtone.path.normalized, volume=ringtone.volume, loop_count=0, pause_time=2)
             SIPApplication.voice_audio_bridge.add(self.wave_ringtone)
             self.wave_ringtone.start()
@@ -682,9 +690,6 @@ class OutgoingCallInitializer(object):
         ui.status = 'Connected'
         reactor.callLater(2, setattr, ui, 'status', None)
 
-        application = SIPSessionApplication()
-        application.outgoing_session = None
-
         for stream in notification.data.streams:
             if stream.type in ('audio', 'video'):
                 show_notice('%s session established using %s codec at %sHz' % (stream.type.title(), stream.codec.capitalize(), stream.sample_rate))
@@ -700,15 +705,35 @@ class OutgoingCallInitializer(object):
                                                                                                   )
                 else:
                     show_notice('%s RTP endpoints %s:%d <-> %s:%d' % (stream.type.title(), stream.local_rtp_address, stream.local_rtp_port, stream.remote_rtp_address, stream.remote_rtp_port))
-
                 
         if session.remote_user_agent is not None:
             show_notice('Remote SIP User Agent is "%s"' % session.remote_user_agent)
 
+    def _NH_MediaStreamDidStart(self, notification):
+        stream = notification.sender
+        if stream.type == 'audio' and self.play_file:
+            file = ResourcePath(self.play_file).normalized
+            show_notice("Play back file %s\n" % file)
+            self.playback_wave_player = WavePlayer(SIPApplication.voice_audio_mixer, file)
+            notification_center = NotificationCenter()
+            notification_center.add_observer(self, sender=self.playback_wave_player)
+            stream.bridge.add(self.playback_wave_player)
+            SIPApplication.voice_audio_bridge.add(self.playback_wave_player)
+            self.playback_wave_player.start()
+
+    def _NH_WavePlayerDidEnd(self, notification):
+        notification_center = NotificationCenter()
+        if notification.sender == self.playback_wave_player:
+            application = SIPSessionApplication()
+            application.outgoing_session.end()
+            notification_center.remove_observer(self, sender=notification.sender)
+                    
     def _NH_SIPSessionDidFail(self, notification):
         notification_center = NotificationCenter()
         session = notification.sender
         notification_center.remove_observer(self, sender=session)
+        if self.playback_wave_player:
+            SIPApplication.voice_audio_bridge.remove(self.playback_wave_player)
 
         ui = UI()
         ui.status = None
@@ -1454,7 +1479,22 @@ class SIPSessionApplication(SIPApplication):
         history_file = os.path.join(config_directory, 'input.history')
         self.keys_path = os.path.join(config_directory, 'keys')
         makedirs(self.keys_path)
+
+        if options.playback_dir:
+            self.playback_dir = options.playback_dir
+        else:
+            self.playback_dir = "%s/spool/playback" % config_directory
+            makedirs(self.playback_dir)
         
+        active_playback_dir = self.playback_dir + '/active'
+        makedirs(active_playback_dir)
+
+        history_playback_dir = self.playback_dir + '/history'
+        makedirs(history_playback_dir)
+
+        self.playback_queue = EventQueue(self._handle_outgoing_playback)
+        show_notice("Polling %s for outgoing wav files" % self.playback_dir)
+
         ui.input.add_history(history_file)
 
         self.options = options
@@ -1521,6 +1561,7 @@ class SIPSessionApplication(SIPApplication):
                           'B': 'dtmf B',
                           'C': 'dtmf C',
                           'D': 'dtmf D'}
+
         ui.start(control_bindings=control_bindings, display_text=False)
 
         Account.register_extension(AccountExtension)
@@ -1626,6 +1667,8 @@ class SIPSessionApplication(SIPApplication):
         show_notice('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
 
         self.ip_address_monitor.start()
+        reactor.callLater(5, self.poll_playback_directory)
+        self.playback_queue.start()
 
         # set the file transfer directory if it's not set
         if settings.file_transfer.directory is None:
@@ -1652,6 +1695,31 @@ class SIPSessionApplication(SIPApplication):
                 call_initializer = OutgoingCallInitializer(self.account, self.target, audio=True, chat=True, video=True)
                 call_initializer.start()
 
+    def poll_playback_directory(self):
+        files = list(filter(os.path.isfile, glob.glob(self.playback_dir + "/*.wav")))
+        files.sort(key=lambda x: os.path.getmtime(x))
+        for file in files:
+            if len(file.split('@')) == 2:
+                active_playback_dir = self.playback_dir + '/active'
+                basename = os.path.basename(file)
+                show_notice("Wav file found %s" % basename)
+                filename = '%s/%s' % (active_playback_dir, basename)
+                os.replace(file, filename)
+                play_object = {'target': os.path.splitext(basename)[0], 
+                               'filename': filename}
+                self.playback_queue.put(play_object)
+
+        reactor.callLater(0.1, self.poll_playback_directory)
+        
+    def _handle_outgoing_playback(self, play_object):
+        # poll self.playback_dir and for each file add an object to the queue
+        # self.playback_queue.put(play_object)
+        show_notice(play_object)
+        self.play_file = play_object['filename']
+        
+        call_initializer = OutgoingCallInitializer(self.account, play_object['target'], audio=True, play_file=self.play_file)
+        call_initializer.start()
+                
     def _NH_SIPApplicationWillEnd(self, notification):
         show_notice('Application will end')
         self.ip_address_monitor.stop()
@@ -2177,10 +2245,11 @@ class SIPSessionApplication(SIPApplication):
                 timer.cancel()
             del self.hangup_timers[id(session)]
 
-        hangup_tone = WavePlayer(self.voice_audio_mixer, ResourcePath('sounds/hangup_tone.wav').normalized)
-        notification_center.add_observer(self, sender=hangup_tone)
-        self.voice_audio_bridge.add(hangup_tone)
-        hangup_tone.start()
+        if not self.play_file:
+            hangup_tone = WavePlayer(self.voice_audio_mixer, ResourcePath('sounds/hangup_tone.wav').normalized)
+            notification_center.add_observer(self, sender=hangup_tone)
+            self.voice_audio_bridge.add(hangup_tone)
+            hangup_tone.start()
 
     def _NH_SIPSessionDidEnd(self, notification):
         notification_center = NotificationCenter()
@@ -2189,6 +2258,11 @@ class SIPSessionApplication(SIPApplication):
         for stream in session.streams or session.proposed_streams or []:
             notification_center.discard_observer(self, sender=stream)
 
+        if self.play_file:
+            show_notice("Removing played file %s" % self.play_file)
+            save_path = self.playback_dir + '/history/' + datetime.now().strftime("%Y%m%d-%H%M%S") + '-' + os.path.basename(self.play_file)
+            os.rename(self.play_file, save_path)
+            self.play_file = None
         ui = UI()
         ui.status = None
 
@@ -2483,7 +2557,6 @@ class SIPSessionApplication(SIPApplication):
             show_notice('Output device has been switched to: %s' % self.voice_audio_mixer.real_output_device)
         if changed_alert_device:
             show_notice('Alert device has been switched to: %s' % self.alert_audio_mixer.real_output_device)
-        
 
     def _NH_WavePlayerDidEnd(self, notification):
         notification_center = NotificationCenter()
@@ -3469,6 +3542,7 @@ if __name__ == '__main__':
     parser.print_usage = parser.print_help
     parser.add_option('-a', '--account', type='string', dest='account', help='The account name to use for any outgoing traffic. If not supplied, the default account will be used.', metavar='NAME')
     parser.add_option('-c', '--config-directory', type='string', dest='config_directory', help='The configuration directory to use. This overrides the default location.')
+    parser.add_option('-p', '--playback-dir', type='string', dest='playback_dir', help='Directory with wav files to be played after calling. The destination SIP address is taken from the filename. After playback the call is hangup')
     parser.add_option('-s', '--trace-sip', action='store_true', dest='trace_sip', default=False, help='Dump the raw contents of incoming and outgoing SIP messages.')
     parser.add_option('-m', '--trace-msrp', action='store_true', dest='trace_msrp', default=False, help='Dump msrp logging information and the raw contents of incoming and outgoing MSRP messages.')
     parser.add_option('-j', '--trace-pjsip', action='store_true', dest='trace_pjsip', default=False, help='Print PJSIP logging output.')
