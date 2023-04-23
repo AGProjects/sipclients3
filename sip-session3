@@ -713,7 +713,7 @@ class OutgoingCallInitializer(object):
         stream = notification.sender
         if stream.type == 'audio' and self.play_file:
             file = ResourcePath(self.play_file).normalized
-            show_notice("Play back file %s\n" % file)
+            show_notice("Playback file %s\n" % file)
             self.playback_wave_player = WavePlayer(SIPApplication.voice_audio_mixer, file)
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=self.playback_wave_player)
@@ -723,11 +723,20 @@ class OutgoingCallInitializer(object):
 
     def _NH_WavePlayerDidEnd(self, notification):
         notification_center = NotificationCenter()
+        notification_center.remove_observer(self, sender=notification.sender)
+        show_notice("Playback finished")
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()
             application.outgoing_session.end()
-            notification_center.remove_observer(self, sender=notification.sender)
-                    
+
+    def _NH_WavePlayerDidFail(self, notification):
+        notification_center = NotificationCenter()
+        notification_center.remove_observer(self, sender=notification.sender)
+        show_notice('Playback %s failed: %s' % (notification.sender.filename, notification.data.error))
+        if notification.sender == self.playback_wave_player:
+            application = SIPSessionApplication()
+            application.outgoing_session.end()
+                                    
     def _NH_SIPSessionDidFail(self, notification):
         notification_center = NotificationCenter()
         session = notification.sender
@@ -1703,7 +1712,7 @@ class SIPSessionApplication(SIPApplication):
                 active_playback_dir = self.playback_dir + '/active'
                 basename = os.path.basename(file)
                 show_notice("Wav file found %s" % basename)
-                filename = '%s/%s' % (active_playback_dir, basename)
+                filename = '%s/%s-%s' % (active_playback_dir, datetime.now().strftime("%Y%m%d-%H%M%S"), basename)
                 os.replace(file, filename)
                 play_object = {'target': os.path.splitext(basename)[0], 
                                'filename': filename}
@@ -2260,7 +2269,8 @@ class SIPSessionApplication(SIPApplication):
 
         if self.play_file:
             show_notice("Removing played file %s" % self.play_file)
-            save_path = self.playback_dir + '/history/' + datetime.now().strftime("%Y%m%d-%H%M%S") + '-' + os.path.basename(self.play_file)
+            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
+            show_notice("Saved play back file to %s" % save_path)
             os.rename(self.play_file, save_path)
             self.play_file = None
         ui = UI()
