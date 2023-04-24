@@ -9,6 +9,7 @@ import os
 import sys
 
 if len(sys.argv) != 2:
+    print("Please run with one argument: %s user@domain" % sys.argv[0])
     exit()
 
 sip_uri = sys.argv[1]
@@ -62,8 +63,6 @@ class Recorder:
             i = i + 1 
             data = self.stream.read(chunk)
             rms_val = self.rms(data)
-#            if i % 10 == 0:
-#                print("%d" % rms_val)
             if rms_val >= Threshold: end = time.time() + TIMEOUT_LENGTH
             if not recording:
                 print('Recording at level %d...' % rms_val)
@@ -75,7 +74,6 @@ class Recorder:
     def write(self, recording):
         n_files = len(os.listdir(f_name_directory))
 
-#        filename = os.path.join(f_name_directory, '{}-living233@sip2sip.info.wav'.format(n_files))
         tmp_filename = os.path.join(f_name_directory, 'tmp1.wav')
 
         wf = wave.open(tmp_filename, 'wb')
@@ -86,26 +84,27 @@ class Recorder:
         wf.close()
         filename = os.path.join(f_name_directory, '%s.wav' % sip_uri)
         os.rename(tmp_filename, filename)
-        print('Written to {}'.format(filename))
-        print('Listening...')
+        print('Saved audio file to {}'.format(filename))
 
     def listen(self):
-        print('Listening...')
         wait_print = False
         i = 0
         while True:
             i = i + 1 
             input = self.stream.read(chunk)
             rms_val = self.rms(input)
-#            if i % 10 == 0 and rms_val > 1:
-#                print("%d" % rms_val)
             if rms_val > Threshold:
                 wait_print = False
                 self.record()
             else:
                 if not wait_print:
-                    print('Waiting')
+                    print('Listening...')
                 wait_print = True
 
-a = Recorder()
-a.listen()
+if __name__ == '__main__':
+    try:
+        a = Recorder()
+        a.listen()
+    except KeyboardInterrupt:
+        sys.exit(0)
+        
