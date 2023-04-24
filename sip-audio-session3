@@ -195,7 +195,8 @@ class SIPAudioApplication(SIPApplication):
         self.session_spool_dir = None
         self.play_file = None
         self.playback_wave_player = None
-        self.disable_ringtones = False
+        self.disable_ringtone = False
+        self.disable_hanguptone = False
 
     def _write(self, message):
         sys.stdout.write(message)
@@ -238,7 +239,8 @@ class SIPAudioApplication(SIPApplication):
         
         self.config_directory = options.config_directory or config_directory
         self.play_file = options.play_file
-        self.disable_ringtones = options.disable_ringtones or self.play_file
+        self.disable_ringtone = options.disable_ringtone or self.play_file
+        self.disable_hanguptone = options.disable_hanguptone
         
         try:
             self.output.put("Using config directory: %s\n" % self.config_directory)
@@ -350,7 +352,7 @@ class SIPAudioApplication(SIPApplication):
         
         self.ip_address_monitor.start()
 
-        if not self.disable_ringtones:
+        if not self.disable_ringtone:
             self.output.put('Available audio input devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.input_devices)))
             self.output.put('Available audio output devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.output_devices)))
             self.output.put('Available audio codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_codecs]))
@@ -375,7 +377,7 @@ class SIPAudioApplication(SIPApplication):
         else:
             self.output.put('Using audio alert device: %s\n' % self.alert_audio_mixer.output_device)
 
-        if not self.batch_mode and not self.disable_ringtones:
+        if not self.batch_mode and not self.disable_ringtone:
             self.print_help()
 
         inbound_ringtone = self.account.sounds.audio_inbound.sound_file if self.account.sounds.audio_inbound is not None else None
@@ -384,7 +386,7 @@ class SIPAudioApplication(SIPApplication):
             self.wave_inbound_ringtone = WavePlayer(self.alert_audio_mixer, inbound_ringtone.path.normalized, volume=inbound_ringtone.volume, loop_count=0, pause_time=2)
             self.alert_audio_bridge.add(self.wave_inbound_ringtone)
     
-        if not self.disable_ringtones:
+        if not self.disable_ringtone:
             if outbound_ringtone:
                 self.wave_outbound_ringtone = WavePlayer(self.voice_audio_mixer, outbound_ringtone.path.normalized, volume=outbound_ringtone.volume, loop_count=0, pause_time=2)
                 self.voice_audio_bridge.add(self.wave_outbound_ringtone)
@@ -791,7 +793,7 @@ class SIPAudioApplication(SIPApplication):
         self.incoming_sessions.append(session)
         if len(self.incoming_sessions) == 1:
             self._print_new_session()
-            if not self.disable_ringtones:
+            if not self.disable_ringtone:
                 if not self.started_sessions:
                     if self.wave_inbound_ringtone:
                         self.wave_inbound_ringtone.start()
@@ -810,12 +812,12 @@ class SIPAudioApplication(SIPApplication):
 
 
     def _NH_SIPSessionGotRingIndication(self, notification):
-        if self.wave_outbound_ringtone and not self.disable_ringtones:
+        if self.wave_outbound_ringtone and not self.disable_ringtone:
             self.wave_outbound_ringtone.start()
 
     def _NH_SIPSessionDidFail(self, notification):
         session = notification.sender
-        if not self.disable_ringtones:
+        if not self.disable_ringtone:
             if session.direction == 'incoming' and session in self.incoming_sessions:
                 if self.wave_inbound_ringtone:
                     self.wave_inbound_ringtone.stop()
@@ -850,7 +852,7 @@ class SIPAudioApplication(SIPApplication):
         if self.incoming_sessions:
             self._print_new_session()
         elif session.direction == 'incoming':
-            if not self.disable_ringtones:
+            if not self.disable_ringtone:
                 if self.wave_inbound_ringtone:
                     self.wave_inbound_ringtone.stop()
                 self.tone_ringtone.stop()
@@ -859,7 +861,7 @@ class SIPAudioApplication(SIPApplication):
 
     def _NH_SIPSessionWillStart(self, notification):
         session = notification.sender
-        if not self.disable_ringtones:
+        if not self.disable_ringtone:
             if session.direction == 'incoming':
                 if self.wave_inbound_ringtone:
                     self.wave_inbound_ringtone.stop()
@@ -919,7 +921,7 @@ class SIPAudioApplication(SIPApplication):
             self.output.put(message)
 
         if self.incoming_sessions:
-            if not self.disable_ringtones:
+            if not self.disable_ringtone:
                 self.tone_ringtone.start()
             self._print_new_session()
 
@@ -943,7 +945,7 @@ class SIPAudioApplication(SIPApplication):
                 timer.cancel()
             del self.hangup_timers[id(session)]
 
-        if not self.disable_ringtones:
+        if not self.disable_hanguptone:
             hangup_tone = WavePlayer(self.voice_audio_mixer, ResourcePath('sounds/hangup_tone.wav').normalized)
             notification_center.add_observer(self, sender=hangup_tone)
             self.voice_audio_bridge.add(hangup_tone)
@@ -1303,7 +1305,8 @@ if __name__ == '__main__':
     parser.add_option('-s', '--trace-sip', action='store_true', dest='trace_sip', default=False, help='Dump the raw contents of incoming and outgoing SIP messages.')
     parser.add_option('-j', '--trace-pjsip', action='store_true', dest='trace_pjsip', default=False, help='Print PJSIP logging output.')
     parser.add_option('-n', '--trace-notifications', action='store_true', dest='trace_notifications', default=False, help='Print all notifications (disabled by default).')
-    parser.add_option('-r', '--disable-ringtones', action='store_true', dest='disable_ringtones', default=False, help='Disable ringtones.')
+    parser.add_option('-r', '--disable-ringtone', action='store_true', dest='disable_ringtone', default=False, help='Disable ringtone.')
+    parser.add_option('-g', '--disable-hanguptone', action='store_true', dest='disable_hanguptone', default=False, help='Disable hangup tone.')
     parser.add_option('-S', '--disable-sound', action='store_true', dest='disable_sound', default=False, help='Disables initializing the sound card.')
     parser.set_default('auto_answer_interval', None)
     parser.add_option('--auto-answer', action='callback', callback=parse_handle_call_option, callback_args=('auto_answer_interval',), help='Interval after which to answer an incoming session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (accept the session as soon as it starts ringing).', metavar='[INTERVAL]')
