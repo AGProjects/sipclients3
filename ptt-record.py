@@ -1,10 +1,17 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 import pyaudio
+from pathlib import Path
 import math
 import struct
 import wave
 import time
 import os
+import sys
+
+if len(sys.argv) != 2:
+    exit()
+
+sip_uri = sys.argv[1]
 
 Threshold = 10
 
@@ -17,7 +24,7 @@ swidth = 2
 
 TIMEOUT_LENGTH = 2
 
-f_name_directory = r'/home/pi/.sipclient/spool/playback'
+f_name_directory = '%s/.sipclient/spool/playback' % Path.home()
 
 class Recorder:
 
@@ -68,14 +75,17 @@ class Recorder:
     def write(self, recording):
         n_files = len(os.listdir(f_name_directory))
 
-        filename = os.path.join(f_name_directory, '{}-abc@sip2sip.info.wav'.format(n_files))
+#        filename = os.path.join(f_name_directory, '{}-living233@sip2sip.info.wav'.format(n_files))
+        tmp_filename = os.path.join(f_name_directory, 'tmp1.wav')
 
-        wf = wave.open(filename, 'wb')
+        wf = wave.open(tmp_filename, 'wb')
         wf.setnchannels(CHANNELS)
         wf.setsampwidth(self.p.get_sample_size(FORMAT))
         wf.setframerate(RATE)
         wf.writeframes(recording)
         wf.close()
+        filename = os.path.join(f_name_directory, '%s.wav' % sip_uri)
+        os.rename(tmp_filename, filename)
         print('Written to {}'.format(filename))
         print('Listening...')
 
