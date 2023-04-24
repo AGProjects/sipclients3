@@ -1,0 +1,101 @@
+#!/usr/bin/python3
+import pyaudio
+import math
+import struct
+import wave
+import time
+import os
+
+Threshold = 10
+
+SHORT_NORMALIZE = (1.0/32768.0)
+chunk = 1024
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 11025
+swidth = 2
+
+TIMEOUT_LENGTH = 2
+
+f_name_directory = r'/home/pi/.sipclient/spool/playback'
+
+class Recorder:
+
+    @staticmethod
+    def rms(frame):
+        count = len(frame) / swidth
+        format = "%dh" % (count)
+        shorts = struct.unpack(format, frame)
+
+        sum_squares = 0.0
+        for sample in shorts:
+            n = sample * SHORT_NORMALIZE
+            sum_squares += n * n
+        rms = math.pow(sum_squares / count, 0.5)
+
+        return rms * 1000
+
+    def __init__(self):
+        self.p = pyaudio.PyAudio()
+        self.stream = self.p.open(format=FORMAT,
+                                  channels=CHANNELS,
+                                  rate=RATE,
+                                  input=True,
+                                  output=True,
+                                  frames_per_buffer=chunk)
+
+    def record(self):
+        rec = []
+        current = time.time()
+        end = time.time() + TIMEOUT_LENGTH
+
+        recording = False
+        i = 0 
+        while current <= end:
+            i = i + 1 
+            data = self.stream.read(chunk)
+            rms_val = self.rms(data)
+#            if i % 10 == 0:
+#                print("%d" % rms_val)
+            if rms_val >= Threshold: end = time.time() + TIMEOUT_LENGTH
+            if not recording:
+                print('Recording at level %d...' % rms_val)
+            recording = True
+            current = time.time()
+            rec.append(data)
+        self.write(b''.join(rec))
+
+    def write(self, recording):
+        n_files = len(os.listdir(f_name_directory))
+
+        filename = os.path.join(f_name_directory, '{}-abc@sip2sip.info.wav'.format(n_files))
+
+        wf = wave.open(filename, 'wb')
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(self.p.get_sample_size(FORMAT))
+        wf.setframerate(RATE)
+        wf.writeframes(recording)
+        wf.close()
+        print('Written to {}'.format(filename))
+        print('Listening...')
+
+    def listen(self):
+        print('Listening...')
+        wait_print = False
+        i = 0
+        while True:
+            i = i + 1 
+            input = self.stream.read(chunk)
+            rms_val = self.rms(input)
+#            if i % 10 == 0 and rms_val > 1:
+#                print("%d" % rms_val)
+            if rms_val > Threshold:
+                wait_print = False
+                self.record()
+            else:
+                if not wait_print:
+                    print('Waiting')
+                wait_print = True
+
+a = Recorder()
+a.listen()
