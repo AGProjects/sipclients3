@@ -10,6 +10,7 @@ import re
 import sys
 import termios
 import uuid
+import subprocess
 
 from datetime import datetime
 from itertools import chain
@@ -263,6 +264,15 @@ class SIPAudioApplication(SIPApplication):
             log.error('Failed to create spool directory at {directory}: {exception!s}'.format(directory=self.spool_dir, exception=e))
         else:
             self.output.put("Using spool directory %s\n" % self.spool_dir)
+            
+        self.scripts_dir = "%s/scripts" % self.config_directory
+
+        for dir in (self.scripts_dir):
+            try:
+                makedirs(dir)
+            except Exception as e:
+                log.error('Failed to create scripts  directory at {directory}: {exception!s}'.format(directory=dir, exception=e))
+        
         
     def print_help(self):
         message  = 'Available control keys:\n'
@@ -782,12 +792,18 @@ class SIPAudioApplication(SIPApplication):
 
         if self.options.auto_answer_interval is not None and self.auto_answer_allowed(str(session.remote_identity.uri)):
             if self.options.auto_answer_interval == 0:
-                session.accept([stream for stream in session.proposed_streams if stream.type in accepted_types])
+                if len(self.incoming_sessions) == 0:
+                    session.accept([stream for stream in session.proposed_streams if stream.type in accepted_types])
+                else:
+                    session.reject()
                 return
             else:
                 def auto_answer():
                     self.incoming_sessions.remove(session)
-                    session.accept([stream for stream in session.proposed_streams if stream.type in accepted_types])
+                    if len(self.incoming_sessions) == 0:
+                        session.accept([stream for stream in session.proposed_streams if stream.type in accepted_types])
+                    else:
+                        session.reject()
                 timer = reactor.callLater(self.options.auto_answer_interval, auto_answer)
                 self.answer_timers[id(session)] = timer
         session.send_ring_indication()
@@ -810,7 +826,6 @@ class SIPAudioApplication(SIPApplication):
         if session.remote_identity.display_name:
             remote_identity = '"%s" <%s>' % (session.remote_identity.display_name, remote_identity)
         self.output.put("Initiating SIP %s session from %s to %s via %s...\n" % ('video' if self.enable_video else 'audio', local_identity, remote_identity, session.route))
-
 
     def _NH_SIPSessionGotRingIndication(self, notification):
         if self.wave_outbound_ringtone and not self.disable_ringtone:
@@ -877,6 +892,13 @@ class SIPAudioApplication(SIPApplication):
             if timer.active():
                 timer.cancel()
             del self.answer_timers[id(session)]
+
+        script = "%s/%s-%s-start" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
+        if os.path.exists(script):
+            self.output.put("Running script %s" % script)
+            p = subprocess.Popen(script)
+        else:
+            self.output.put("Script %s does not exist" % script)
 
 
     def _NH_SIPSessionDidStart(self, notification):
@@ -996,7 +1018,6 @@ class SIPAudioApplication(SIPApplication):
                 pass
             else:
                 self.output.put('TLS Subject: %s\n' % certificate.subject)
-
         
     def _NH_SIPSessionDidEnd(self, notification):
         self.end_cancel_thread()
@@ -1048,7 +1069,14 @@ class SIPAudioApplication(SIPApplication):
         if session is self.outgoing_session:
             self.stop()
             self.end_cancel_thread()
-            
+
+        script = "%s/%s-%s-end" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
+        if os.path.exists(script):
+            self.output.put("Running script %s" % script)
+            p = subprocess.Popen(script)
+        else:
+            self.output.put("Script %s does not exist" % script)
+
         on_hold_streams = [stream for stream in chain(*(session.streams for session in self.started_sessions)) if stream.on_hold]
         if not on_hold_streams and self.hold_tone and self.hold_tone.is_active:
             self.hold_tone.stop()

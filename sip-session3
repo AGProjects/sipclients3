@@ -577,6 +577,7 @@ class OutgoingCallInitializer(object):
         self.streams = []
         self.play_file = play_file
         self.playback_wave_player = None
+        self.play_file = play_file
 
         if video:
             self.streams.append(MediaStreamRegistry.VideoStream())
