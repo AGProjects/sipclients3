@@ -679,7 +679,8 @@ class SIPAudioApplication(SIPApplication):
         self.output.put('%s Registered Bonjour contact %s\n' % (datetime.now().replace(microsecond=0), notification.data.name))
 
     def _NH_BonjourAccountRegistrationDidFail(self, notification):
-        self.output.put('%s Failed to register Bonjour contact: %s\n' % (datetime.now().replace(microsecond=0), notification.data.reason))
+        pass
+        #self.output.put('%s Failed to register Bonjour contact: %s\n' % (datetime.now().replace(microsecond=0), notification.data.reason))
 
     def _NH_BonjourAccountRegistrationDidEnd(self, notification):
         self.output.put('%s Registration ended.\n' % datetime.now().replace(microsecond=0))

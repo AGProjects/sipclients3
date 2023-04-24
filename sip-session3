@@ -1974,7 +1974,7 @@ class SIPSessionApplication(SIPApplication):
             return
 
         self.last_failure_reason = notification.data.reason
-        show_notice('%s Failed to register Bonjour contact: %s' % (datetime.now().replace(microsecond=0), notification.data.reason))
+        #show_notice('%s Failed to register Bonjour contact: %s' % (datetime.now().replace(microsecond=0), notification.data.reason))
 
     def _NH_BonjourAccountRegistrationDidEnd(self, notification):
         pass
@@ -2268,9 +2268,8 @@ class SIPSessionApplication(SIPApplication):
             notification_center.discard_observer(self, sender=stream)
 
         if self.play_file:
-            show_notice("Removing played file %s" % self.play_file)
             save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-            show_notice("Saved play back file to %s" % save_path)
+            show_notice("Saved playback file to %s" % save_path)
             os.rename(self.play_file, save_path)
             self.play_file = None
         ui = UI()
