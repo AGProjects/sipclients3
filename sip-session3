@@ -683,6 +683,21 @@ class OutgoingCallInitializer(object):
             self.wave_ringtone = None
         ui.status = 'Connecting...'
 
+
+    def _NH_SIPSessionDidEnd(self, notification):
+        if self.play_file:
+            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
+            show_notice("Saved playback file to %s" % save_path)
+            os.rename(self.play_file, save_path)
+            self.play_file = None
+
+    def _NH_SIPSessionDidFail(self, notification):
+        if self.play_file:
+            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
+            show_notice("Saved playback file to %s" % save_path)
+            os.rename(self.play_file, save_path)
+            self.play_file = None
+
     def _NH_SIPSessionDidStart(self, notification):
         notification_center = NotificationCenter()
         ui = UI()
@@ -728,7 +743,8 @@ class OutgoingCallInitializer(object):
         show_notice("Playback finished")
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()
-            application.outgoing_session.end()
+            if application.outgoing_session:
+                application.outgoing_session.end()
 
     def _NH_WavePlayerDidFail(self, notification):
         notification_center = NotificationCenter()
@@ -736,7 +752,8 @@ class OutgoingCallInitializer(object):
         show_notice('Playback %s failed: %s' % (notification.sender.filename, notification.data.error))
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()
-            application.outgoing_session.end()
+            if application.outgoing_session:
+                application.outgoing_session.end()
                                     
     def _NH_SIPSessionDidFail(self, notification):
         notification_center = NotificationCenter()
@@ -1706,13 +1723,16 @@ class SIPSessionApplication(SIPApplication):
                 call_initializer.start()
 
     def poll_playback_directory(self):
+        if self.outgoing_session:
+            reactor.callLater(0.1, self.poll_playback_directory)
+            return
         files = list(filter(os.path.isfile, glob.glob(self.playback_dir + "/*.wav")))
         files.sort(key=lambda x: os.path.getmtime(x))
         for file in files:
             if len(file.split('@')) == 2:
                 active_playback_dir = self.playback_dir + '/active'
                 basename = os.path.basename(file)
-                show_notice("Wav file found %s" % basename)
+                show_notice("Audio recording detected %s" % basename)
                 filename = '%s/%s-%s' % (active_playback_dir, datetime.now().strftime("%Y%m%d-%H%M%S"), basename)
                 os.replace(file, filename)
                 play_object = {'target': os.path.splitext(basename)[0], 
@@ -2255,12 +2275,6 @@ class SIPSessionApplication(SIPApplication):
                 timer.cancel()
             del self.hangup_timers[id(session)]
 
-        if not self.play_file:
-            hangup_tone = WavePlayer(self.voice_audio_mixer, ResourcePath('sounds/hangup_tone.wav').normalized)
-            notification_center.add_observer(self, sender=hangup_tone)
-            self.voice_audio_bridge.add(hangup_tone)
-            hangup_tone.start()
-
     def _NH_SIPSessionDidEnd(self, notification):
         notification_center = NotificationCenter()
         session = notification.sender
@@ -2268,11 +2282,6 @@ class SIPSessionApplication(SIPApplication):
         for stream in session.streams or session.proposed_streams or []:
             notification_center.discard_observer(self, sender=stream)
 
-        if self.play_file:
-            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-            show_notice("Saved playback file to %s" % save_path)
-            os.rename(self.play_file, save_path)
-            self.play_file = None
         ui = UI()
         ui.status = None
 
