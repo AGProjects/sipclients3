@@ -578,6 +578,8 @@ class OutgoingCallInitializer(object):
         self.play_file = play_file
         self.playback_wave_player = None
         self.play_file = play_file
+        application = SIPSessionApplication()
+        self.playback_dir = application.playback_dir
 
         if video:
             self.streams.append(MediaStreamRegistry.VideoStream())
@@ -684,20 +686,6 @@ class OutgoingCallInitializer(object):
         ui.status = 'Connecting...'
 
 
-    def _NH_SIPSessionDidEnd(self, notification):
-        if self.play_file:
-            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-            show_notice("Saved playback file to %s" % save_path)
-            os.rename(self.play_file, save_path)
-            self.play_file = None
-
-    def _NH_SIPSessionDidFail(self, notification):
-        if self.play_file:
-            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-            show_notice("Saved playback file to %s" % save_path)
-            os.rename(self.play_file, save_path)
-            self.play_file = None
-
     def _NH_SIPSessionDidStart(self, notification):
         notification_center = NotificationCenter()
         ui = UI()
@@ -741,6 +729,11 @@ class OutgoingCallInitializer(object):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
         show_notice("Playback finished")
+        if self.play_file:
+            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
+            show_notice("Saved playback file to %s" % save_path)
+            os.rename(self.play_file, save_path)
+            self.play_file = None
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()
             if application.outgoing_session:
