@@ -14,13 +14,13 @@ if len(sys.argv) != 2:
 
 sip_uri = sys.argv[1]
 
-Threshold = 10
+Threshold = 20
 
 SHORT_NORMALIZE = (1.0/32768.0)
 chunk = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-RATE = 11025
+RATE = 16000
 swidth = 2
 
 TIMEOUT_LENGTH = 2
@@ -63,10 +63,11 @@ class Recorder:
             i = i + 1 
             data = self.stream.read(chunk)
             rms_val = self.rms(data)
-            if rms_val >= Threshold: end = time.time() + TIMEOUT_LENGTH
-            if not recording:
-                print('Recording at level %d...' % rms_val)
-            recording = True
+            if rms_val >= Threshold: 
+                end = time.time() + TIMEOUT_LENGTH
+                if not recording:
+                    print('Recording at level %d > %d...' % (rms_val, Threshold))
+                recording = True
             current = time.time()
             rec.append(data)
         self.write(b''.join(rec))
