@@ -266,13 +266,10 @@ class SIPAudioApplication(SIPApplication):
             self.output.put("Using spool directory %s\n" % self.spool_dir)
             
         self.scripts_dir = "%s/scripts" % self.config_directory
-
-        for dir in (self.scripts_dir):
-            try:
-                makedirs(dir)
-            except Exception as e:
-                log.error('Failed to create scripts  directory at {directory}: {exception!s}'.format(directory=dir, exception=e))
-        
+        try:
+            makedirs(self.scripts_dir)
+        except Exception as e:
+            log.error('Failed to create scripts  directory at {directory}: {exception!s}'.format(directory=dir, exception=e))
         
     def print_help(self):
         message  = 'Available control keys:\n'
@@ -897,9 +894,6 @@ class SIPAudioApplication(SIPApplication):
         if os.path.exists(script):
             self.output.put("Running script %s" % script)
             p = subprocess.Popen(script)
-        else:
-            self.output.put("Script %s does not exist" % script)
-
 
     def _NH_SIPSessionDidStart(self, notification):
         notification_center = NotificationCenter()
@@ -1074,8 +1068,6 @@ class SIPAudioApplication(SIPApplication):
         if os.path.exists(script):
             self.output.put("Running script %s" % script)
             p = subprocess.Popen(script)
-        else:
-            self.output.put("Script %s does not exist" % script)
 
         on_hold_streams = [stream for stream in chain(*(session.streams for session in self.started_sessions)) if stream.on_hold]
         if not on_hold_streams and self.hold_tone and self.hold_tone.is_active:

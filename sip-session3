@@ -11,6 +11,7 @@ import random
 import requests
 import uuid
 import pgpy
+import subprocess
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ from dateutil.tz import tzlocal
 from itertools import chain
 from lxml import html
 from optparse import OptionParser
+from pathlib import Path
 from threading import Event, Thread
 from time import sleep
 
@@ -580,6 +582,7 @@ class OutgoingCallInitializer(object):
         self.play_file = play_file
         application = SIPSessionApplication()
         self.playback_dir = application.playback_dir
+        self.remote_identity = None
 
         if video:
             self.streams.append(MediaStreamRegistry.VideoStream())
@@ -662,6 +665,7 @@ class OutgoingCallInitializer(object):
         if session.local_identity.display_name:
             local_identity = '"%s" <%s>' % (session.local_identity.display_name, local_identity)
         remote_identity = str(session.remote_identity.uri)
+        self.remote_identity = remote_identity.split(":")[1]
         if session.remote_identity.display_name:
             remote_identity = '"%s" <%s>' % (session.remote_identity.display_name, remote_identity)
         show_notice("Initiating SIP session from %s to %s via %s..." % (local_identity, remote_identity, session.route))
@@ -716,6 +720,15 @@ class OutgoingCallInitializer(object):
     def _NH_MediaStreamDidStart(self, notification):
         stream = notification.sender
         if stream.type == 'audio' and self.play_file:
+            script = "%s/scripts/%s-playback-start" % (self.playback_dir, self.remote_identity)
+            lock_file = "%s/playback.lock" % self.playback_dir
+            Path(lock_file).touch()
+            if os.path.exists(script):
+                show_notice("Running script %s" % script)
+                p = subprocess.Popen(script)
+            else:
+                show_notice("Script does not exist %s" % script)
+
             file = ResourcePath(self.play_file).normalized
             show_notice("Playback file %s\n" % file)
             self.playback_wave_player = WavePlayer(SIPApplication.voice_audio_mixer, file)
@@ -730,9 +743,7 @@ class OutgoingCallInitializer(object):
         notification_center.remove_observer(self, sender=notification.sender)
         show_notice("Playback finished")
         if self.play_file:
-            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-            show_notice("Saved playback file to %s" % save_path)
-            os.rename(self.play_file, save_path)
+            self._playback_end()
             self.play_file = None
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()
@@ -743,7 +754,9 @@ class OutgoingCallInitializer(object):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
         show_notice('Playback %s failed: %s' % (notification.sender.filename, notification.data.error))
-        if notification.sender == self.playback_wave_player:
+        if notification.sender == self.playback_wave_player or self.play_file:
+            self._playback_end()
+            self.play_file = None
             application = SIPSessionApplication()
             if application.outgoing_session:
                 application.outgoing_session.end()
@@ -752,7 +765,9 @@ class OutgoingCallInitializer(object):
         notification_center = NotificationCenter()
         session = notification.sender
         notification_center.remove_observer(self, sender=session)
+        self.play_file = None
         if self.playback_wave_player:
+            self._playback_end()
             SIPApplication.voice_audio_bridge.remove(self.playback_wave_player)
 
         ui = UI()
@@ -772,6 +787,17 @@ class OutgoingCallInitializer(object):
         else:
             pass
             #show_notice('SIP session failed: %s' % notification.data.failure_reason)
+
+    def _playback_end(self):
+        lock_file = "%s/playback.lock" % self.playback_dir
+        os.remove(lock_file)
+        script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.remote_identity)
+        if os.path.exists(script):
+            show_notice("Running script %s" % script)
+            p = subprocess.Popen(script)
+        save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
+        show_notice("Saved playback file to %s" % save_path)
+        os.rename(self.play_file, save_path)
 
 
 @implementer(IObserver)
@@ -1446,7 +1472,6 @@ class IncomingTransferHandler(object):
         self._terminate(failure_reason=notification.data.reason)
 
 
-
 class SIPSessionApplication(SIPApplication):
     # public methods
     #
@@ -1490,6 +1515,7 @@ class SIPSessionApplication(SIPApplication):
         self.smp_secret = None
         self.must_exit = False
         self.last_failure_reason = None
+        self.enable_playback = False
 
     def start(self, target, options, filepath=None):
         notification_center = NotificationCenter()
@@ -1499,21 +1525,28 @@ class SIPSessionApplication(SIPApplication):
         history_file = os.path.join(config_directory, 'input.history')
         self.keys_path = os.path.join(config_directory, 'keys')
         makedirs(self.keys_path)
-
-        if options.playback_dir:
-            self.playback_dir = options.playback_dir
-        else:
-            self.playback_dir = "%s/spool/playback" % config_directory
-            makedirs(self.playback_dir)
         
-        active_playback_dir = self.playback_dir + '/active'
-        makedirs(active_playback_dir)
+        self.enable_playback = options.enable_playback
+        if self.enable_playback:
+            if options.playback_dir:
+                self.playback_dir = options.playback_dir
+            else:
+                self.playback_dir = "%s/spool/playback" % config_directory
+                makedirs(self.playback_dir)
 
-        history_playback_dir = self.playback_dir + '/history'
-        makedirs(history_playback_dir)
+            lock_file = "%s/playback.lock" % self.playback_dir
+            os.remove(lock_file)
 
-        self.playback_queue = EventQueue(self._handle_outgoing_playback)
-        show_notice("Polling %s for outgoing wav files" % self.playback_dir)
+            self.playback_queue = EventQueue(self._handle_outgoing_playback)
+
+            active_playback_dir = self.playback_dir + '/active'
+            makedirs(active_playback_dir)
+
+            history_playback_dir = self.playback_dir + '/history'
+            makedirs(history_playback_dir)
+
+            scripts_playback_dir = self.playback_dir + '/scripts'
+            makedirs(scripts_playback_dir)
 
         ui.input.add_history(history_file)
 
@@ -1687,8 +1720,11 @@ class SIPSessionApplication(SIPApplication):
         show_notice('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
 
         self.ip_address_monitor.start()
-        reactor.callLater(5, self.poll_playback_directory)
-        self.playback_queue.start()
+
+        if self.enable_playback:
+            show_notice("Polling %s for wav files" % self.playback_dir)
+            self.playback_queue.start()
+            reactor.callLater(3, self.poll_playback_directory)
 
         # set the file transfer directory if it's not set
         if settings.file_transfer.directory is None:
@@ -1719,6 +1755,7 @@ class SIPSessionApplication(SIPApplication):
         if self.outgoing_session:
             reactor.callLater(0.1, self.poll_playback_directory)
             return
+
         files = list(filter(os.path.isfile, glob.glob(self.playback_dir + "/*.wav")))
         files.sort(key=lambda x: os.path.getmtime(x))
         for file in files:
@@ -3554,8 +3591,9 @@ if __name__ == '__main__':
     parser.print_usage = parser.print_help
     parser.add_option('-a', '--account', type='string', dest='account', help='The account name to use for any outgoing traffic. If not supplied, the default account will be used.', metavar='NAME')
     parser.add_option('-c', '--config-directory', type='string', dest='config_directory', help='The configuration directory to use. This overrides the default location.')
-    parser.add_option('-p', '--playback-dir', type='string', dest='playback_dir', help='Directory with wav files to be played after calling. The destination SIP address is taken from the filename. After playback the call is hangup')
+    parser.add_option('--playback-dir', type='string', dest='playback_dir', help='Directory with wav files to be played after calling. The destination SIP address is taken from the filename. After playback the call is hangup')
     parser.add_option('-s', '--trace-sip', action='store_true', dest='trace_sip', default=False, help='Dump the raw contents of incoming and outgoing SIP messages.')
+    parser.add_option('-p', '--enable_playback', action='store_true', dest='enable_playback', default=False, help='Enable polling playback directory for new wavs.')
     parser.add_option('-m', '--trace-msrp', action='store_true', dest='trace_msrp', default=False, help='Dump msrp logging information and the raw contents of incoming and outgoing MSRP messages.')
     parser.add_option('-j', '--trace-pjsip', action='store_true', dest='trace_pjsip', default=False, help='Print PJSIP logging output.')
     parser.add_option('-n', '--trace-notifications', action='store_true', dest='trace_notifications', default=False, help='Print all notifications (disabled by default).')

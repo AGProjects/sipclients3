@@ -14,18 +14,19 @@ if len(sys.argv) != 2:
 
 sip_uri = sys.argv[1]
 
-Threshold = 20
+Threshold = 0 if sip_uri == 'test' else 60
 
 SHORT_NORMALIZE = (1.0/32768.0)
 chunk = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-RATE = 16000
+RATE = 32000
 swidth = 2
 
 TIMEOUT_LENGTH = 2
 
 f_name_directory = '%s/.sipclient/spool/playback' % Path.home()
+lock_file = '%s/.sipclient/spool/playback/playback.lock' % Path.home()
 
 class Recorder:
 
@@ -65,14 +66,18 @@ class Recorder:
             rms_val = self.rms(data)
             if rms_val >= Threshold: 
                 end = time.time() + TIMEOUT_LENGTH
-                if not recording:
-                    print('Recording at level %d > %d...' % (rms_val, Threshold))
+#                if not recording:
+                print('Recording at level %d > %d...' % (rms_val, Threshold))
                 recording = True
             current = time.time()
             rec.append(data)
         self.write(b''.join(rec))
 
     def write(self, recording):
+        if os.path.exists(lock_file):
+            print("Lock file %s, skip saving file" % lock_file)
+            return
+
         n_files = len(os.listdir(f_name_directory))
 
         tmp_filename = os.path.join(f_name_directory, 'tmp1.wav')
@@ -96,7 +101,10 @@ class Recorder:
             rms_val = self.rms(input)
             if rms_val > Threshold:
                 wait_print = False
-                self.record()
+                if sip_uri != 'test':
+                    self.record()
+                else:
+                    print("Level %d" % rms_val)
             else:
                 if not wait_print:
                     print('Listening...')
