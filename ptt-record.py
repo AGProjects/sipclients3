@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import pyaudio
 from pathlib import Path
 import math
@@ -15,6 +16,7 @@ if len(sys.argv) != 2:
 sip_uri = sys.argv[1]
 
 Threshold = 0 if sip_uri == 'test' else 60
+MIN_REC_TIME = 20
 
 SHORT_NORMALIZE = (1.0/32768.0)
 chunk = 1024
@@ -57,6 +59,7 @@ class Recorder:
         rec = []
         current = time.time()
         end = time.time() + TIMEOUT_LENGTH
+        start_time = current
 
         recording = False
         i = 0 
@@ -66,12 +69,18 @@ class Recorder:
             rms_val = self.rms(data)
             if rms_val >= Threshold: 
                 end = time.time() + TIMEOUT_LENGTH
-#                if not recording:
-                print('Recording at level %d > %d...' % (rms_val, Threshold))
+                if not recording:
+                    print('Recording at level %d > %d...' % (rms_val, Threshold))
                 recording = True
             current = time.time()
             rec.append(data)
-        self.write(b''.join(rec))
+
+        rec_time = time.time() - start_time - TIMEOUT_LENGTH
+        if rec_time > MIN_REC_TIME:
+            print("Recorded %.1f seconds" % rec_time)
+            self.write(b''.join(rec))
+        else:
+            print("Skip too short recording")
 
     def write(self, recording):
         if os.path.exists(lock_file):
