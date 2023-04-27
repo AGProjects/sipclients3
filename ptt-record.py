@@ -100,6 +100,9 @@ class Recorder:
             input = self.stream.read(chunk)
             rms_val = self.rms(input)
             if rms_val > Threshold:
+                if os.path.exists(lock_file):
+                    continue
+
                 wait_print = False
                 if sip_uri != 'test':
                     self.record()

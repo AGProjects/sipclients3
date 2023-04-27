@@ -790,7 +790,8 @@ class OutgoingCallInitializer(object):
 
     def _playback_end(self):
         lock_file = "%s/playback.lock" % self.playback_dir
-        os.remove(lock_file)
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
         script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.remote_identity)
         if os.path.exists(script):
             show_notice("Running script %s" % script)
@@ -1535,7 +1536,8 @@ class SIPSessionApplication(SIPApplication):
                 makedirs(self.playback_dir)
 
             lock_file = "%s/playback.lock" % self.playback_dir
-            os.remove(lock_file)
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
 
             self.playback_queue = EventQueue(self._handle_outgoing_playback)
 
