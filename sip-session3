@@ -720,9 +720,9 @@ class OutgoingCallInitializer(object):
     def _NH_MediaStreamDidStart(self, notification):
         stream = notification.sender
         if stream.type == 'audio' and self.play_file:
-            script = "%s/scripts/%s-playback-start" % (self.playback_dir, self.remote_identity)
             lock_file = "%s/playback.lock" % self.playback_dir
             Path(lock_file).touch()
+            script = "%s/scripts/%s-playback-start" % (self.playback_dir, self.remote_identity)
             if os.path.exists(script):
                 show_notice("Running script %s" % script)
                 p = subprocess.Popen(script)
@@ -745,6 +745,7 @@ class OutgoingCallInitializer(object):
         if self.play_file:
             self._playback_end()
             self.play_file = None
+
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()
             if application.outgoing_session:
@@ -767,7 +768,6 @@ class OutgoingCallInitializer(object):
         notification_center.remove_observer(self, sender=session)
         self.play_file = None
         if self.playback_wave_player:
-            self._playback_end()
             SIPApplication.voice_audio_bridge.remove(self.playback_wave_player)
 
         ui = UI()
@@ -789,16 +789,21 @@ class OutgoingCallInitializer(object):
             #show_notice('SIP session failed: %s' % notification.data.failure_reason)
 
     def _playback_end(self):
-        lock_file = "%s/playback.lock" % self.playback_dir
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
+
         script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.remote_identity)
+
         if os.path.exists(script):
             show_notice("Running script %s" % script)
             p = subprocess.Popen(script)
+        
+        
         save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
         show_notice("Saved playback file to %s" % save_path)
         os.rename(self.play_file, save_path)
+        
+        lock_file = "%s/playback.lock" % self.playback_dir
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
 
 
 @implementer(IObserver)
@@ -1528,13 +1533,13 @@ class SIPSessionApplication(SIPApplication):
         makedirs(self.keys_path)
         
         self.enable_playback = options.enable_playback
-        if self.enable_playback:
-            if options.playback_dir:
-                self.playback_dir = options.playback_dir
-            else:
-                self.playback_dir = "%s/spool/playback" % config_directory
-                makedirs(self.playback_dir)
+        if options.playback_dir:
+            self.playback_dir = options.playback_dir
+        else:
+            self.playback_dir = "%s/spool/playback" % config_directory
+            makedirs(self.playback_dir)
 
+        if self.enable_playback:
             lock_file = "%s/playback.lock" % self.playback_dir
             if os.path.exists(lock_file):
                 os.remove(lock_file)

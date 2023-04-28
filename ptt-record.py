@@ -15,8 +15,8 @@ if len(sys.argv) != 2:
 
 sip_uri = sys.argv[1]
 
-Threshold = 0 if sip_uri == 'test' else 60
-MIN_REC_TIME = 20
+Threshold = 0 if sip_uri == 'test' else 80
+MIN_REC_TIME = 2.0
 
 SHORT_NORMALIZE = (1.0/32768.0)
 chunk = 1024
@@ -80,7 +80,8 @@ class Recorder:
             print("Recorded %.1f seconds" % rec_time)
             self.write(b''.join(rec))
         else:
-            print("Skip too short recording")
+            if rec_time > 1:
+                print("Skip too short recording %.1f seconds" % rec_time)
 
     def write(self, recording):
         if os.path.exists(lock_file):
@@ -104,14 +105,20 @@ class Recorder:
     def listen(self):
         wait_print = False
         i = 0
+        lock_print = False
         while True:
             i = i + 1 
             input = self.stream.read(chunk)
             rms_val = self.rms(input)
             if rms_val > Threshold:
                 if os.path.exists(lock_file):
+                    if not lock_print:
+                        print("Lock file %s, skip saving file" % lock_file)
+                    lock_print = True
                     continue
-
+                else:
+                    lock_print = False    
+                
                 wait_print = False
                 if sip_uri != 'test':
                     self.record()
@@ -121,6 +128,7 @@ class Recorder:
                 if not wait_print:
                     print('Listening...')
                 wait_print = True
+
 
 if __name__ == '__main__':
     try:
