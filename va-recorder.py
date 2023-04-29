@@ -72,7 +72,7 @@ class Recorder:
         self.MIN_REC_TIME = options.min_rec_time
         print('Available devices: %s' % ", ".join(devices_text))
         print('Using audio device %s' % devices[self.device])
-        self.threshhold = 0 if target == 'test' else options.threshhold
+        self.threshold = 0 if target == 'test' else options.threshold
         self.stream = self.p.open(format=self.FORMAT,
                                   channels=self.CHANNELS,
                                   rate=self.RATE,
@@ -95,8 +95,8 @@ class Recorder:
             rms_val = self.rms(data)
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             if i == 1:
-                print('%s Recording at level %d > %d...' % (now, rms_val, self.threshhold))
-            if rms_val >= self.threshhold: 
+                print('%s Recording at level %d > %d...' % (now, rms_val, self.threshold))
+            if rms_val >= self.threshold: 
                 end = time.time() + self.TIMEOUT_LENGTH
                 print('Recording at level %d...' % rms_val, end='\r')
                 recording = True
@@ -139,7 +139,7 @@ class Recorder:
             i = i + 1 
             input = self.stream.read(self.chunk)
             rms_val = self.rms(input)
-            if rms_val > self.threshhold:
+            if rms_val > self.threshold:
                 if os.path.exists(lock_file):
                     if not lock_print:
                         print("Lock file %s, skip saving file" % lock_file)
@@ -163,15 +163,15 @@ class Recorder:
 
 
 if __name__ == '__main__':
-    description = 'This script is a voice activate recorder that saves individual recording in the folder %s that is polled by sip-session to initiate an outgoing call and playback the file. The filename is in the format user@domain.wav' % f_name_directory
+    description = 'This script is a voice activate recorder that saves individual recording in the folder %s that is polled by sip-session to initiate an outgoing call and playback the file. The filename is in the format user@domain.wav. Use test argument to test audio level.' % f_name_directory
     usage = '%prog [options] [user@domain]'
     parser = OptionParser(usage=usage, description=description)
     parser.print_usage = parser.print_help
-    parser.add_option('-r', '--sample_rate', type='int', default='16000', dest='rate', help='Sample rate')
-    parser.add_option('-d', '--device', type='int', default=0, dest='device', help='Use selected device')
-    parser.add_option('-t', '--timeout', type='int', default=2, dest='timeout', help='Timeout silence to stop recording')
-    parser.add_option('-m', '--min_rec_time', type='int', default=2, dest='min_rec_time', help='Minimum time to save recording')
-    parser.add_option('-l', '--threshhold', type='int', default=30, dest='threshhold', help='Minimum signal level to start recording')
+    parser.add_option('-r', '--sample_rate', type='int', default='16000', dest='rate', help='Audio sample rate')
+    parser.add_option('-d', '--device', type='int', default=0, dest='device', help='Use selected input audio device')
+    parser.add_option('-t', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
+    parser.add_option('-m', '--min_rec_time', type='int', default=2, dest='min_rec_time', help='Minimum recording time to save recording')
+    parser.add_option('-l', '--threshold', type='int', default=30, dest='threshold', help='Minimum signal level to start recording')
 
     options, args = parser.parse_args()
     try:
