@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import pyaudio
+import wave
 from ctypes import *
 from optparse import OptionParser
 from pathlib import Path
@@ -70,6 +71,12 @@ class Recorder:
         self.RATE = options.rate
         self.device = options.device
         self.MIN_REC_TIME = options.min_rec_time
+        self.external_lock_file = options.external_lock_file
+        self.external_trigger_file = options.external_trigger_file
+
+        self.started_by_file = False
+        self.started_by_level = False
+                    
         print('Available devices: %s' % ", ".join(devices_text))
         print('Using audio device %s' % devices[self.device])
         self.threshold = 0 if target == 'test' else options.threshold
@@ -81,6 +88,55 @@ class Recorder:
                                   input_device_index=self.device,
                                   frames_per_buffer=self.chunk)
 
+    def listen(self):
+        wait_print = False
+        i = 0
+        lock_print = False
+        external_lock_print = False
+        while True:
+            i = i + 1 
+            input = self.stream.read(self.chunk, exception_on_overflow = False)
+            rms_val = self.rms(input)
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            if os.path.exists(lock_file):
+                if not lock_print:
+                    print("%s - lock file %s present, listen paused" % (now, lock_file))
+        
+                lock_print = True
+                continue
+            else:
+                if lock_print:
+                    print("%s - lock file %s removed, listen resumed" % (now, lock_file))
+                lock_print = False    
+
+            if self.external_lock_file:
+                if os.path.exists(self.external_lock_file):
+                    if not external_lock_print:
+                        print("%s - external lock file %s present, listen paused" % (now, self.external_lock_file))
+
+                    external_lock_print = True
+                    continue
+                else:
+                    if external_lock_print:
+                        print("%s - external lock file %s removed, listen resumed" % (now, self.external_lock_file))
+                    external_lock_print = False
+            
+            wait_print = False
+
+            if self.external_trigger_file:
+                if os.path.exists(self.external_trigger_file):
+                    self.started_by_file = True
+                    print('%s Recording by file %s' % (now, self.external_trigger_file))
+            elif rms_val > self.threshold:
+                print('%s Recording by level %s' % (now, rms_val))
+                self.started_by_level = True
+            
+            if self.started_by_level or self.started_by_file:
+                self.record()
+            else:
+                print("Level %d" % rms_val, end='\r')
+
     def record(self):
         rec = []
         current = time.time()
@@ -89,22 +145,23 @@ class Recorder:
 
         recording = False
         i = 0 
-        while current <= end:
+        print('Now recording...')
+        
+        while (self.started_by_level and current <= end) or (self.started_by_file and os.path.exists(self.external_trigger_file)):
             i = i + 1 
             data = self.stream.read(self.chunk)
             rms_val = self.rms(data)
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            if i == 1:
-                print('%s Recording at level %d > %d...' % (now, rms_val, self.threshold))
-            if rms_val >= self.threshold: 
-                end = time.time() + self.TIMEOUT_LENGTH
+
+            if self.external_trigger_file or (self.started_by_level and rms_val >= self.threshold):
                 print('Recording at level %d...' % rms_val, end='\r')
                 recording = True
+
             current = time.time()
             rec.append(data)
 
         rec_time = time.time() - start_time - self.TIMEOUT_LENGTH
-        if rec_time > self.MIN_REC_TIME:
+        if self.started_by_file or rec_time > self.MIN_REC_TIME:
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print("%s - recorded %.1f seconds" % (now, rec_time))
             self.write(b''.join(rec))
@@ -112,14 +169,41 @@ class Recorder:
             if rec_time > 1:
                 print("Skip too short recording %.1f seconds" % rec_time)
 
+        self.started_by_file = False
+        self.started_by_level = False
+
+    def play(self, file):
+        p = pyaudio.PyAudio()
+    
+        wf = wave.open(file, 'rb')
+        stream = p.open(
+            format = p.get_format_from_width(wf.getsampwidth()),
+            channels = wf.getnchannels(),
+            rate = wf.getframerate(),
+            output = True
+        )
+
+        data = wf.readframes(1024)
+
+        while data != b'':
+            stream.write(data)
+            data = wf.readframes(1024)
+        stream.close()
+        p.terminate()
+
     def write(self, recording):
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         if os.path.exists(lock_file):
-            print("Lock file %s, skip saving file" % lock_file)
+            print("%s - lock file %s present, skip file" % (now, lock_file))
+            return
+
+        if self.external_lock_file and os.path.exists(self.external_lock_file):
+            print("%s - external lock file %s present, skip file" % (now, self.external_lock_file))
             return
 
         n_files = len(os.listdir(f_name_directory))
 
-        tmp_filename = os.path.join(f_name_directory, 'tmp1.wav')
+        tmp_filename = os.path.join(f_name_directory, '%s.tmp' % self.target)
 
         wf = wave.open(tmp_filename, 'wb')
         wf.setnchannels(self.CHANNELS)
@@ -129,33 +213,10 @@ class Recorder:
         wf.close()
         filename = os.path.join(f_name_directory, '%s.wav' % self.target)
         os.rename(tmp_filename, filename)
-        print('Saved audio file to {}'.format(filename))
+        print('%s - saved audio file to %s' % (now, filename))
 
-    def listen(self):
-        wait_print = False
-        i = 0
-        lock_print = False
-        while True:
-            i = i + 1 
-            input = self.stream.read(self.chunk)
-            rms_val = self.rms(input)
-            if rms_val > self.threshold:
-                if os.path.exists(lock_file):
-                    if not lock_print:
-                        print("Lock file %s, skip saving file" % lock_file)
-                    lock_print = True
-                    continue
-                else:
-                    lock_print = False    
-                
-                wait_print = False
-                if self.target != 'test':
-                    self.record()
-                else:
-                    print("Level %d" % rms_val, end='\r')
-                    
-            else:
-                print("Level %d" % rms_val, end='\r')
+        if self.target == 'test':
+            self.play(filename)
 
     def end(self):
     # Reset to default error handler
@@ -172,6 +233,8 @@ if __name__ == '__main__':
     parser.add_option('-t', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
     parser.add_option('-m', '--min_rec_time', type='int', default=2, dest='min_rec_time', help='Minimum recording time to save recording')
     parser.add_option('-l', '--threshold', type='int', default=30, dest='threshold', help='Minimum signal level to start recording')
+    parser.add_option('-e', '--external_lock_file', type='string', dest='external_lock_file', help='Skip recording if file exists')
+    parser.add_option('-i', '--external_trigger_file', type='string', dest='external_trigger_file', help='Start recording if file exists, regardless of level')
 
     options, args = parser.parse_args()
     try:
@@ -186,4 +249,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         a.end()
         sys.exit(0)
-        
+
