@@ -745,6 +745,12 @@ class OutgoingCallInitializer(object):
         if self.play_file:
             self._playback_end()
             self.play_file = None
+            settings = SIPSimpleSettings()
+            api.sleep(0.3)
+            rogertone = settings.sounds.roger_beep
+            roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
+            SIPApplication.voice_audio_bridge.add(roger_tone)
+            roger_tone.start()
 
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()

@@ -27,6 +27,7 @@ class SoundsSettings(SettingsGroup):
     audio_outbound = Setting(type=SoundFile, default=SoundFile('sounds/ring_outbound.wav'), nillable=True)
     message_received = Setting(type=SoundFile, default=SoundFile('sounds/message_received.wav'), nillable=True)
     message_sent = Setting(type=SoundFile, default=SoundFile('sounds/message_sent.wav'), nillable=True)
+    roger_beep = Setting(type=SoundFile, default=SoundFile('sounds/rogerbeep.wav'), nillable=True)
     file_received = Setting(type=SoundFile, default=SoundFile('sounds/file_received.wav'), nillable=True)
     file_sent = Setting(type=SoundFile, default=SoundFile('sounds/file_sent.wav'), nillable=True)
 
