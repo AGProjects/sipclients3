@@ -756,6 +756,7 @@ class OutgoingCallInitializer(object):
             api.sleep(0.3)
             rogertone = settings.sounds.roger_beep
             roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
+            show_notice("Play roger beep")
             SIPApplication.voice_audio_bridge.add(roger_tone)
             roger_tone.start()
 
@@ -1795,11 +1796,7 @@ class SIPSessionApplication(SIPApplication):
         reactor.callLater(0.1, self.poll_playback_directory)
         
     def _handle_outgoing_playback(self, play_object):
-        # poll self.playback_dir and for each file add an object to the queue
-        # self.playback_queue.put(play_object)
-        show_notice(play_object)
         self.play_file = play_object['filename']
-        
         call_initializer = OutgoingCallInitializer(self.account, play_object['target'], audio=True, play_file=self.play_file)
         call_initializer.start()
                 
