@@ -74,6 +74,7 @@ class Recorder:
         self.max_rec_time = options.max_rec_time
         self.external_lock_file = options.external_lock_file
         self.external_trigger_file = options.external_trigger_file
+        self.quiet = options.quiet
 
         self.started_by_file = False
         self.started_by_level = False
@@ -140,10 +141,11 @@ class Recorder:
             if self.started_by_level or self.started_by_file:
                 self.record()
             else:
-                if self.external_trigger_file:
-                    print("%s - listening, level %3d" % (now, rms_val), end='\r')
-                else:
-                    print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
+                if not self.quiet:
+                    if self.external_trigger_file:
+                        print("%s - listening, level %3d" % (now, rms_val), end='\r')
+                    else:
+                        print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
 
     def record(self):
         rec = []
@@ -167,7 +169,8 @@ class Recorder:
                 if rms_val >= self.threshold: end = time.time() + self.timeout_length
                     #if not recording:
                 diff = time.time() - start_time
-                print('%s - recording at level %3d for %.1f seconds' % (now, rms_val, diff), end='\r')
+                if not self.quiet:
+                    print('%s - recording at level %3d for %.1f seconds' % (now, rms_val, diff), end='\r')
                 recording = True
 
                 current = time.time()
@@ -198,7 +201,8 @@ class Recorder:
                 data = self.stream.read(self.chunk)
                 rms_val = self.rms(data)
                 now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                print('%s - recording by file at level %3d' % (now, rms_val), end='\r')
+                if not self.quiet:
+                    print('%s - recording by file at level %3d' % (now, rms_val), end='\r')
                 recording = True
                 current = time.time()
                 rec.append(data)
@@ -282,7 +286,8 @@ if __name__ == '__main__':
     parser.add_option('-l', '--threshold', type='int', default=30, dest='threshold', help='Minimum signal level to start recording')
     parser.add_option('-e', '--external_lock_file', type='string', dest='external_lock_file', help='Skip recording if file exists')
     parser.add_option('-i', '--external_trigger_file', type='string', dest='external_trigger_file', help='Start recording if file exists, regardless of level')
-
+    parser.add_option('-q', '--quiet', action='store_true', dest='quiet', default=False, help='Minimize logging.')
+    
     options, args = parser.parse_args()
     try:
         target = args[0]
