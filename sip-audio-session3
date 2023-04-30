@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import atexit
+import glob
 import os
 import platform
 import select
@@ -13,6 +14,7 @@ import uuid
 import subprocess
 
 from datetime import datetime
+from eventlib import api
 from itertools import chain
 from optparse import OptionParser
 from threading import Thread
@@ -30,6 +32,7 @@ from gnutls.crypto import X509Certificate, X509PrivateKey
 
 from twisted.internet import reactor
 
+from pathlib import Path
 from sipsimple.account import Account, AccountManager, BonjourAccount
 from sipsimple.audio import WavePlayer
 from sipsimple.application import SIPApplication
@@ -199,6 +202,8 @@ class SIPAudioApplication(SIPApplication):
         self.disable_ringtone = False
         self.disable_hanguptone = False
 
+        self.enable_playback = False
+
     def _write(self, message):
         sys.stdout.write(message)
         sys.stdout.flush()
@@ -213,6 +218,7 @@ class SIPAudioApplication(SIPApplication):
         self.target = target
         self.batch_mode = options.batch_mode
         self.enable_video = options.enable_video
+        self.log_register = options.log_register
         self.input = InputThread() if not self.batch_mode else None
         self.output = EventQueue(self._write)
         self.logger = Logger(sip_to_stdout=options.trace_sip, pjsip_to_stdout=options.trace_pjsip, notifications_to_stdout=options.trace_notifications)
@@ -239,8 +245,7 @@ class SIPAudioApplication(SIPApplication):
         SIPSimpleSettings.register_extension(SIPSimpleSettingsExtension)
         
         self.config_directory = options.config_directory or config_directory
-        self.play_file = options.play_file
-        self.disable_ringtone = options.disable_ringtone or self.play_file
+        self.disable_ringtone = options.disable_ringtone
         self.disable_hanguptone = options.disable_hanguptone
         self.auto_record = options.auto_record
         
@@ -271,6 +276,55 @@ class SIPAudioApplication(SIPApplication):
             makedirs(self.scripts_dir)
         except Exception as e:
             log.error('Failed to create scripts  directory at {directory}: {exception!s}'.format(directory=dir, exception=e))
+
+        self.enable_playback = options.enable_playback
+        if options.playback_dir:
+            self.playback_dir = options.playback_dir
+        else:
+            self.playback_dir = "%s/spool/playback" % self.config_directory
+            makedirs(self.playback_dir)
+
+        if self.enable_playback:
+            lock_file = "%s/playback.lock" % self.playback_dir
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+
+            self.playback_queue = EventQueue(self._handle_outgoing_playback)
+
+            active_playback_dir = self.playback_dir + '/active'
+            makedirs(active_playback_dir)
+
+            history_playback_dir = self.playback_dir + '/history'
+            makedirs(history_playback_dir)
+
+            scripts_playback_dir = self.playback_dir + '/scripts'
+            makedirs(scripts_playback_dir)
+
+    def poll_playback_directory(self):
+        if self.outgoing_session:
+            reactor.callLater(0.1, self.poll_playback_directory)
+            return
+
+        files = list(filter(os.path.isfile, glob.glob(self.playback_dir + "/*.wav")))
+        files.sort(key=lambda x: os.path.getmtime(x))
+        for file in files:
+            if len(file.split('@')) == 2:
+                active_playback_dir = self.playback_dir + '/active'
+                basename = os.path.basename(file)
+                self.output.put("Audio recording detected %s" % basename)
+                filename = '%s/%s-%s' % (active_playback_dir, datetime.now().strftime("%Y%m%d-%H%M%S"), basename)
+                os.replace(file, filename)
+                play_object = {'target': os.path.splitext(basename)[0], 
+                               'filename': filename}
+                self.playback_queue.put(play_object)
+
+        reactor.callLater(0.1, self.poll_playback_directory)
+
+    def _handle_outgoing_playback(self, play_object):
+        print(play_object)
+    
+        self.play_file = play_object['filename']
+        self.start_outgoing_call(play_object['target'])
         
     def print_help(self):
         message  = 'Available control keys:\n'
@@ -360,6 +414,11 @@ class SIPAudioApplication(SIPApplication):
         
         self.ip_address_monitor.start()
 
+        if self.enable_playback:
+            self.output.put("Polling %s for wav files" % self.playback_dir)
+            self.playback_queue.start()
+            reactor.callLater(3, self.poll_playback_directory)
+            
         if not self.disable_ringtone:
             self.output.put('Available audio input devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.input_devices)))
             self.output.put('Available audio output devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.output_devices)))
@@ -412,64 +471,77 @@ class SIPAudioApplication(SIPApplication):
             settings.save()
 
         if self.target is not None:
-            if isinstance(self.account, BonjourAccount) and '@' not in self.target:
-                self.output.put('Bonjour mode requires a host in the destination address\n')
+            self.start_outgoing_call(target)
+
+    def start_outgoing_call(self, target):
+        self.target = target
+
+        if isinstance(self.account, BonjourAccount) and '@' not in self.target:
+            self.output.put('Bonjour mode requires a host in the destination address\n')
+            if not self.enable_playback:
                 self.stop()
                 self.end_cancel_thread()
-                return
-            if '@' not in self.target:
-                self.target = '%s@%s' % (self.target, self.account.id.domain)
-            if not self.target.startswith('sip:') and not self.target.startswith('sips:'):
-                self.target = 'sip:' + self.target
-            try:
-                self.target = SIPURI.parse(self.target)
-            except SIPCoreError:
-                self.output.put('Illegal SIP URI: %s\n' % self.target)
+            return
+
+        if self.play_file:
+            lock_file = "%s/playback.lock" % self.playback_dir
+            Path(lock_file).touch()
+            self.output.put("Lock file %s created" % lock_file)
+            
+        if '@' not in self.target:
+            self.target = '%s@%s' % (self.target, self.account.id.domain)
+        if not self.target.startswith('sip:') and not self.target.startswith('sips:'):
+            self.target = 'sip:' + self.target
+        try:
+            self.target = SIPURI.parse(self.target)
+        except SIPCoreError:
+            self.output.put('Illegal SIP URI: %s\n' % self.target)
+            if not self.enable_playback:
                 self.stop()
+        else:
+            if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
+                self.target.host = '%s.%s' % (self.target.host, self.account.id.domain)
+            lookup = DNSLookup()
+            notification_center = NotificationCenter()
+            settings = SIPSimpleSettings()
+            notification_center.add_observer(self, sender=lookup)
+            
+            self.session_spool_dir = self.spool_dir + "/" + (self.options.external_id or str(uuid.uuid1()))
+
+            if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
+                uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
+                tls_name = self.account.sip.tls_name or self.account.sip.outbound_proxy.host
+            elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
+                uri = SIPURI(host=self.account.id.domain)
+                tls_name = self.account.sip.tls_name or self.account.id.domain
             else:
-                if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
-                    self.target.host = '%s.%s' % (self.target.host, self.account.id.domain)
-                lookup = DNSLookup()
-                notification_center = NotificationCenter()
-                settings = SIPSimpleSettings()
-                notification_center.add_observer(self, sender=lookup)
-                
-                self.session_spool_dir = self.spool_dir + "/" + (self.options.external_id or str(uuid.uuid1()))
-
-                if isinstance(self.account, Account) and self.account.sip.outbound_proxy is not None:
-                    uri = SIPURI(host=self.account.sip.outbound_proxy.host, port=self.account.sip.outbound_proxy.port, parameters={'transport': self.account.sip.outbound_proxy.transport})
-                    tls_name = self.account.sip.tls_name or self.account.sip.outbound_proxy.host
-                elif isinstance(self.account, Account) and self.account.sip.always_use_my_proxy:
-                    uri = SIPURI(host=self.account.id.domain)
-                    tls_name = self.account.sip.tls_name or self.account.id.domain
+                uri = self.target
+                tls_name = uri.host
+                if self.account is not BonjourAccount():
+                    if self.account.id.domain == uri.host.decode():
+                        tls_name = self.account.sip.tls_name or self.account.id.domain
+                    elif "isfocus" in str(uri) and uri.host.decode().endswith(self.account.id.domain):
+                        tls_name = self.account.conference.tls_name or self.account.sip.tls_name or self.account.id.domain
                 else:
-                    uri = self.target
-                    tls_name = uri.host
-                    if self.account is not BonjourAccount():
-                        if self.account.id.domain == uri.host.decode():
-                            tls_name = self.account.sip.tls_name or self.account.id.domain
-                        elif "isfocus" in str(uri) and uri.host.decode().endswith(self.account.id.domain):
-                            tls_name = self.account.conference.tls_name or self.account.sip.tls_name or self.account.id.domain
-                    else:
-                        is_ip_address = re.match("^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", uri.host.decode()) or ":" in uri.host.decode()
-                        if "isfocus" in str(uri) and self.account.conference.tls_name:
-                            tls_name = self.account.conference.tls_name
-                        elif  is_ip_address and  self.account.sip.tls_name:
-                            tls_name = self.account.sip.tls_name
-                    
-                self.output.put('DNS lookup for %s' % uri)
+                    is_ip_address = re.match("^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", uri.host.decode()) or ":" in uri.host.decode()
+                    if "isfocus" in str(uri) and self.account.conference.tls_name:
+                        tls_name = self.account.conference.tls_name
+                    elif  is_ip_address and  self.account.sip.tls_name:
+                        tls_name = self.account.sip.tls_name
+                
+            self.output.put('DNS lookup for %s' % uri)
 
-                lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=tls_name)
+            lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=tls_name)
 
-                try:
-                    makedirs(self.session_spool_dir)
-                except Exception as e:
-                    log.error('Failed to create session spool directory at {directory}: {exception!s}'.format(directory=self.session_spool_dir, exception=e))
-                else:    
-                    if self.stop_call_thread is None:
-                        self.stop_call_thread = CancelThread(self)
-                        self.stop_call_thread.start()
-                    self.output.put("To stop the call: touch %s/stop\n" % self.session_spool_dir)
+            try:
+                makedirs(self.session_spool_dir)
+            except Exception as e:
+                log.error('Failed to create session spool directory at {directory}: {exception!s}'.format(directory=self.session_spool_dir, exception=e))
+            else:    
+                if self.stop_call_thread is None:
+                    self.stop_call_thread = CancelThread(self)
+                    self.stop_call_thread.start()
+                self.output.put("To stop the call: touch %s/stop\n" % self.session_spool_dir)
 
     def _NH_SIPApplicationWillEnd(self, notification):
         if isinstance(self.account, Account):
@@ -669,10 +741,11 @@ class SIPAudioApplication(SIPApplication):
         contact_header_list = notification.data.contact_header_list
         expires = notification.data.expires
         registrar = notification.data.registrar
-        message = '%s Registered contact "%s" for sip:%s at %s:%d;transport=%s (expires in %d seconds).\n' % (datetime.now().replace(microsecond=0), contact_header.uri, self.account.id, registrar.address, registrar.port, registrar.transport, expires)
-        if len(contact_header_list) > 1:
-            message += 'Other registered contacts:\n%s\n' % '\n'.join(['  %s (expires in %s seconds)' % (str(other_contact_header.uri), other_contact_header.expires) for other_contact_header in contact_header_list if other_contact_header.uri != notification.data.contact_header.uri])
-        self.output.put(message)
+        if self.log_register:
+            message = '%s Registered contact "%s" for sip:%s at %s:%d;transport=%s (expires in %d seconds).\n' % (datetime.now().replace(microsecond=0), contact_header.uri, self.account.id, registrar.address, registrar.port, registrar.transport, expires)
+            if len(contact_header_list) > 1:
+                message += 'Other registered contacts:\n%s\n' % '\n'.join(['  %s (expires in %s seconds)' % (str(other_contact_header.uri), other_contact_header.expires) for other_contact_header in contact_header_list if other_contact_header.uri != notification.data.contact_header.uri])
+            self.output.put(message)
         
         self.registration_succeeded = True
 
@@ -740,8 +813,12 @@ class SIPAudioApplication(SIPApplication):
 
     def _NH_DNSLookupDidFail(self, notification):
         self.output.put('DNS lookup failed: %s\n' % notification.data.error)
-        self.stop()
-        self.end_cancel_thread()
+        if not self.enable_playback:
+            self.play_file = None
+            self.stop()
+            self.end_cancel_thread()
+
+        self._remove_lock()
 
     def auto_answer_allowed(self, uri):
        if not self.options.auto_answer_uris:
@@ -830,6 +907,9 @@ class SIPAudioApplication(SIPApplication):
             self.wave_outbound_ringtone.start()
 
     def _NH_SIPSessionDidFail(self, notification):
+        self.play_file = None
+        self._remove_lock()
+
         session = notification.sender
         if not self.disable_ringtone:
             if session.direction == 'incoming' and session in self.incoming_sessions:
@@ -843,18 +923,19 @@ class SIPAudioApplication(SIPApplication):
         if notification.data.failure_reason == 'Call completed elsewhere' or notification.data.code == 487:
             self.output.put('Session cancelled\n')
             if session is self.outgoing_session:
-                self.stop()
-                self.end_cancel_thread()
+                if not self.enable_playback:
+                    self.stop()
+                    self.end_cancel_thread()
             if session in self.incoming_sessions:
                 self.incoming_sessions.remove(session)
         elif notification.data.failure_reason == 'user request':
             self.output.put('Session rejected by user (%d %s)\n' % (notification.data.code, notification.data.reason))
-            if notification.sender is self.outgoing_session:
+            if notification.sender is self.outgoing_session and not self.enable_playback:
                 self.stop()
                 self.end_cancel_thread()
         else:
             self.output.put('Session failed: %s\n' % notification.data.failure_reason)
-            if session is self.outgoing_session:
+            if session is self.outgoing_session and not self.enable_playback:
                self.stop()
                self.end_cancel_thread()
         
@@ -1024,8 +1105,10 @@ class SIPAudioApplication(SIPApplication):
                 self.output.put('TLS Subject: %s\n' % certificate.subject)
         
     def _NH_SIPSessionDidEnd(self, notification):
+        self.play_file = None
         self.end_cancel_thread()
-
+        self._remove_lock()
+        
         session = notification.sender
         if session is not self.active_session:
             identity = str(session.remote_identity.uri)
@@ -1070,7 +1153,7 @@ class SIPAudioApplication(SIPApplication):
             else:
                 self.active_session = None
 
-        if session is self.outgoing_session:
+        if session is self.outgoing_session and not self.enable_playback:
             self.stop()
             self.end_cancel_thread()
 
@@ -1176,12 +1259,18 @@ class SIPAudioApplication(SIPApplication):
     def _NH_MediaStreamDidStart(self, notification):
         stream = notification.sender
         if stream.type == 'audio' and self.play_file:
+            script = "%s/scripts/%s-playback-start" % (self.playback_dir, self.target)
+            if os.path.exists(script):
+                self.output.put("Running script %s" % script)
+                p = subprocess.Popen(script)
+            else:
+                self.output.put("Script does not exist %s" % script)
+    
             self.playback_wave_player = WavePlayer(self.voice_audio_mixer, ResourcePath(self.play_file).normalized)
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=self.playback_wave_player)
             self.output.put("Play back file %s\n" % self.play_file)
             stream.bridge.add(self.playback_wave_player)
-            self.voice_audio_bridge.add(self.playback_wave_player)
             self.playback_wave_player.start()
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
@@ -1247,16 +1336,44 @@ class SIPAudioApplication(SIPApplication):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
         self.output.put('Failed to play %s: %s' % (notification.sender.filename, notification.data.error))
-        if notification.sender == self.playback_wave_player:
+        if notification.sender == self.playback_wave_player or self.play_file:
+            self._playback_end()
+            self.play_file = None
             if self.active_session:
                 self.active_session.end()
 
     def _NH_WavePlayerDidEnd(self, notification):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
+        if self.play_file:
+            self._playback_end()
+            self.play_file = None
+            settings = SIPSimpleSettings()
+            api.sleep(0.3)
+            rogertone = settings.sounds.roger_beep
+            roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
+            SIPApplication.voice_audio_bridge.add(roger_tone)
+            roger_tone.start()
+            
         if notification.sender == self.playback_wave_player:
-            self.output.put("Play back ended\n")
             self.active_session.end()
+
+    def _playback_end(self):
+        script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.target)
+        if os.path.exists(script):
+            self.output.put("Running script %s" % script)
+            p = subprocess.Popen(script)
+
+        save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
+        self.output.put("Saved playback file to %s" % save_path)
+        os.rename(self.play_file, save_path)
+        self._remove_lock()
+        
+    def _remove_lock(self):
+        lock_file = "%s/playback.lock" % self.playback_dir
+        if os.path.exists(lock_file):
+            self.outgoing_session = None
+            os.remove(lock_file)
 
     def _NH_DefaultAudioDeviceDidChange(self, notification):
         SIPApplication._NH_DefaultAudioDeviceDidChange(self, notification)
@@ -1332,7 +1449,9 @@ if __name__ == '__main__':
     parser.print_usage = parser.print_help
     parser.add_option('-a', '--account', type='string', dest='account', help='The account name to use for any outgoing traffic. If not supplied, the default account will be used.', metavar='NAME')
     parser.add_option('-c', '--config-directory', type='string', dest='config_directory', help='The configuration directory to use. This overrides the default location.')
-    parser.add_option('-p', '--play-file', type='string', dest='play_file', help='Play file and hangup, outgoing calls only')
+    parser.add_option('-d', '--playback-dir', type='string', dest='playback_dir', help='Directory with wav files to be played after calling. The destination SIP address is taken from the filename. After playback the call is hangup')
+    parser.add_option('-p', '--enable_playback', action='store_true', dest='enable_playback', default=False, help='Enable polling playback directory for new wavs.')
+    parser.add_option('-l', '--log-register', action='store_true', dest='log_register', default=False, help='Log result of registrations.')
     parser.add_option('-s', '--trace-sip', action='store_true', dest='trace_sip', default=False, help='Dump the raw contents of incoming and outgoing SIP messages.')
     parser.add_option('-j', '--trace-pjsip', action='store_true', dest='trace_pjsip', default=False, help='Print PJSIP logging output.')
     parser.add_option('-r', '--auto-record', action='store_true', dest='auto_record', default=False, help='Automatic recording of voice calls.')
@@ -1350,7 +1469,7 @@ if __name__ == '__main__':
     parser.set_default('auto_hangup_interval', None)
     parser.add_option('--auto-hangup', action='callback', callback=parse_handle_call_option, callback_args=('auto_hangup_interval',), help='Interval after which to hang up an established session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (hangup the session as soon as it connects).', metavar='[INTERVAL]')
     parser.add_option('-b', '--batch', action='store_true', dest='batch_mode', default=False, help='Run the program in batch mode: reading input from the console is disabled and the option --auto-answer is implied. This is particularly useful when running this script in a non-interactive environment.')
-    parser.add_option('-d', '--daemonize', action='store_true', dest='daemonize', default=False, help='Enable running this program as a deamon.')
+    parser.add_option('-D', '--daemonize', action='store_true', dest='daemonize', default=False, help='Enable running this program as a deamon.')
     options, args = parser.parse_args()
 
     target = args[0] if args and not options.auto_answer_uris else None
