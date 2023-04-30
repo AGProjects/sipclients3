@@ -12,6 +12,8 @@ import time
 import os
 import sys
 from datetime import datetime
+import functools
+print = functools.partial(print, flush=True)
 
 # remove useless alsa logging
 # From alsa-lib Git 3fd4ab9be0db7c7430ebd258f2717a976381715d
@@ -59,13 +61,6 @@ class Recorder:
         info = self.p.get_host_api_info_by_index(0)
         numdevices = info.get('deviceCount')
 
-        devices = {}
-        devices_text = []
-        for i in range(0, numdevices):
-            if (self.p.get_device_info_by_host_api_device_index(0, i).get('maxInputChannels')) > 0:
-                devices[i] = self.p.get_device_info_by_host_api_device_index(0, i).get('name')
-                devices_text.append("%s) %s" % (i, devices[i]))
-                
         self.target = target
         self.timeout_length = options.timeout
         self.RATE = options.rate
@@ -78,10 +73,22 @@ class Recorder:
 
         self.started_by_file = False
         self.started_by_level = False
-                    
+
+        devices = {}
+        devices_text = []
+        for i in range(0, numdevices):
+            if (self.p.get_device_info_by_host_api_device_index(0, i).get('maxInputChannels')) > 0:
+                devices[i] = self.p.get_device_info_by_host_api_device_index(0, i).get('name')
+                if devices[i] == str(self.device):
+                    self.device = i
+                elif str(i) == str(self.device):
+                    self.device = i
+
+                devices_text.append("%s) %s" % (i, devices[i]))
+
         print('Available devices: %s' % ", ".join(devices_text))
         try:
-            print('Using audio device %s at sample rate %d' % (devices[self.device], self.RATE))
+            print('Using audio device %s) %s at sample rate %d' % (self.device, devices[self.device], self.RATE))
         except KeyError:
             print('Non existent audio device')
 
@@ -279,7 +286,7 @@ if __name__ == '__main__':
     parser = OptionParser(usage=usage, description=description)
     parser.print_usage = parser.print_help
     parser.add_option('-r', '--sample_rate', type='int', default='16000', dest='rate', help='Audio sample rate')
-    parser.add_option('-d', '--device', type='int', default=0, dest='device', help='Use selected input audio device')
+    parser.add_option('-d', '--device', type='string', default='pulse', dest='device', help='Use selected input audio device')
     parser.add_option('-t', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
     parser.add_option('-m', '--min_rec_time', type='int', default=2, dest='min_rec_time', help='Minimum recording time to save recording')
     parser.add_option('-M', '--max_rec_time', type='int', default=5, dest='max_rec_time', help='Maximum recording time for each file')
