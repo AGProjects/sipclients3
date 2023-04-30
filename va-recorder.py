@@ -78,7 +78,11 @@ class Recorder:
         self.started_by_level = False
                     
         print('Available devices: %s' % ", ".join(devices_text))
-        print('Using audio device %s' % devices[self.device])
+        try:
+            print('Using audio device %s at sample rate %d' % (devices[self.device], self.RATE))
+        except KeyError:
+            print('Non existent audio device')
+
         self.threshold = 0 if target == 'test' else options.threshold
         self.stream = self.p.open(format=self.FORMAT,
                                   channels=self.CHANNELS,
@@ -248,5 +252,8 @@ if __name__ == '__main__':
         a.listen()
     except KeyboardInterrupt:
         a.end()
+        sys.exit(0)
+    except OSError as e:
+        print("Error: %s" % str(e))
         sys.exit(0)
 
