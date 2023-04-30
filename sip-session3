@@ -597,6 +597,11 @@ class OutgoingCallInitializer(object):
         self.wave_ringtone = None
 
     def start(self):
+        if self.play_file:
+            lock_file = "%s/playback.lock" % self.playback_dir
+            Path(lock_file).touch()
+            show_notice("Lock file %s created" % lock_file)
+
         if isinstance(self.account, BonjourAccount) and '@' not in self.target:
             show_notice('Bonjour mode requires a host in the destination address')
             return
@@ -658,6 +663,7 @@ class OutgoingCallInitializer(object):
         show_notice('Call to %s failed: DNS lookup error: %s' % (self.target, notification.data.error))
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
+        self._remove_lock()
 
     def _NH_SIPSessionNewOutgoing(self, notification):
         session = notification.sender
@@ -690,6 +696,9 @@ class OutgoingCallInitializer(object):
         ui.status = 'Connecting...'
 
 
+    def _NH_SIPSessionDidEnd(self, notification):
+        self._remove_lock()
+
     def _NH_SIPSessionDidStart(self, notification):
         notification_center = NotificationCenter()
         ui = UI()
@@ -720,8 +729,6 @@ class OutgoingCallInitializer(object):
     def _NH_MediaStreamDidStart(self, notification):
         stream = notification.sender
         if stream.type == 'audio' and self.play_file:
-            lock_file = "%s/playback.lock" % self.playback_dir
-            Path(lock_file).touch()
             script = "%s/scripts/%s-playback-start" % (self.playback_dir, self.remote_identity)
             if os.path.exists(script):
                 show_notice("Running script %s" % script)
@@ -769,6 +776,7 @@ class OutgoingCallInitializer(object):
                 application.outgoing_session.end()
                                     
     def _NH_SIPSessionDidFail(self, notification):
+        self._remove_lock()
         notification_center = NotificationCenter()
         session = notification.sender
         notification_center.remove_observer(self, sender=session)
@@ -806,7 +814,9 @@ class OutgoingCallInitializer(object):
         save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
         show_notice("Saved playback file to %s" % save_path)
         os.rename(self.play_file, save_path)
+        self._remove_lock()
         
+    def _remove_lock(self):
         lock_file = "%s/playback.lock" % self.playback_dir
         if os.path.exists(lock_file):
             os.remove(lock_file)
