@@ -67,10 +67,11 @@ class Recorder:
                 devices_text.append("%s) %s" % (i, devices[i]))
                 
         self.target = target
-        self.TIMEOUT_LENGTH = options.timeout
+        self.timeout_length = options.timeout
         self.RATE = options.rate
         self.device = options.device
-        self.MIN_REC_TIME = options.min_rec_time
+        self.min_rec_time = options.min_rec_time
+        self.max_rec_time = options.max_rec_time
         self.external_lock_file = options.external_lock_file
         self.external_trigger_file = options.external_trigger_file
 
@@ -111,7 +112,7 @@ class Recorder:
                 continue
             else:
                 if lock_print:
-                    print("%s - lock file %s removed, listen resumed" % (now, lock_file))
+                    print("%s - lock file %s absent, listen resumed" % (now, lock_file))
                 lock_print = False    
 
             if self.external_lock_file:
@@ -123,7 +124,7 @@ class Recorder:
                     continue
                 else:
                     if external_lock_print:
-                        print("%s - external lock file %s removed, listen resumed" % (now, self.external_lock_file))
+                        print("%s - external lock file %s absent, listen resumed" % (now, self.external_lock_file))
                     external_lock_print = False
             
             wait_print = False
@@ -131,47 +132,87 @@ class Recorder:
             if self.external_trigger_file:
                 if os.path.exists(self.external_trigger_file):
                     self.started_by_file = True
-                    print('%s Recording by file %s' % (now, self.external_trigger_file))
-            elif rms_val > self.threshold:
-                print('%s Recording by level %s' % (now, rms_val))
+                    print('%s - recording by file %s' % (now, self.external_trigger_file))
+            elif rms_val >= self.threshold:
+                print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
                 self.started_by_level = True
             
             if self.started_by_level or self.started_by_file:
                 self.record()
             else:
-                print("Level %d" % rms_val, end='\r')
+                if self.external_trigger_file:
+                    print("%s - listening, level %3d" % (now, rms_val), end='\r')
+                else:
+                    print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
 
     def record(self):
         rec = []
         current = time.time()
-        end = time.time() + self.TIMEOUT_LENGTH
+        end = time.time() + self.timeout_length
         start_time = current
 
         recording = False
         i = 0 
-        print('Now recording...')
-        
-        while (self.started_by_level and current <= end) or (self.started_by_file and os.path.exists(self.external_trigger_file)):
-            i = i + 1 
-            data = self.stream.read(self.chunk)
-            rms_val = self.rms(data)
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            if self.external_trigger_file or (self.started_by_level and rms_val >= self.threshold):
-                print('Recording at level %d...' % rms_val, end='\r')
+        #now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        #print('%s - now recording...' % now)
+
+        if self.started_by_level:        
+            while current <= end:
+                i = i + 1 
+                data = self.stream.read(self.chunk)
+                rms_val = self.rms(data)
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                if rms_val >= self.threshold: end = time.time() + self.timeout_length
+                    #if not recording:
+                diff = time.time() - start_time
+                print('%s - recording at level %3d for %.1f seconds' % (now, rms_val, diff), end='\r')
                 recording = True
 
-            current = time.time()
-            rec.append(data)
+                current = time.time()
+                rec.append(data)
 
-        rec_time = time.time() - start_time - self.TIMEOUT_LENGTH
-        if self.started_by_file or rec_time > self.MIN_REC_TIME:
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                rec_time = time.time() - start_time
+                if rec_time > self.max_rec_time:
+                    #print("%s - maximum recording time of %d seconds reached" % (now, rec_time))
+                    break
+                else: 
+                    rec_time = time.time() - start_time - self.timeout_length
+                
+                if os.path.exists(lock_file):
+                    print("%s - lock file %s detected" % (now, lock_file))
+                    break
+
+            if rec_time > self.min_rec_time:
+                self.write(b''.join(rec), rec_time)
+            else:
+                if rec_time > 1:
+                    print("Skip too short recording %.1f seconds" % rec_time)
+                else:
+                    print()
+
+        if self.started_by_file:
+            while os.path.exists(self.external_trigger_file):
+                i = i + 1 
+                data = self.stream.read(self.chunk)
+                rms_val = self.rms(data)
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                print('%s - recording by file at level %3d' % (now, rms_val), end='\r')
+                recording = True
+                current = time.time()
+                rec.append(data)
+
+                rec_time = time.time() - start_time
+                if rec_time > self.max_rec_time:
+                    break
+
+                if os.path.exists(lock_file):
+                    print("%s - lock file %s detected" % (now, lock_file))
+                    break
+
             print("%s - recorded %.1f seconds" % (now, rec_time))
-            self.write(b''.join(rec))
-        else:
-            if rec_time > 1:
-                print("Skip too short recording %.1f seconds" % rec_time)
+            self.write(b''.join(rec), rec_time)
 
         self.started_by_file = False
         self.started_by_level = False
@@ -195,7 +236,7 @@ class Recorder:
         stream.close()
         p.terminate()
 
-    def write(self, recording):
+    def write(self, recording, duration):
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         if os.path.exists(lock_file):
             print("%s - lock file %s present, skip file" % (now, lock_file))
@@ -217,13 +258,14 @@ class Recorder:
         wf.close()
         filename = os.path.join(f_name_directory, '%s.wav' % self.target)
         os.rename(tmp_filename, filename)
-        print('%s - saved audio file to %s' % (now, filename))
+        print('%s - saved %d seconds audio to %s' % (now, duration, filename))
 
         if self.target == 'test':
             self.play(filename)
 
     def end(self):
     # Reset to default error handler
+        self.p.terminate()
         asound.snd_lib_error_set_handler(None)
 
 
@@ -236,6 +278,7 @@ if __name__ == '__main__':
     parser.add_option('-d', '--device', type='int', default=0, dest='device', help='Use selected input audio device')
     parser.add_option('-t', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
     parser.add_option('-m', '--min_rec_time', type='int', default=2, dest='min_rec_time', help='Minimum recording time to save recording')
+    parser.add_option('-M', '--max_rec_time', type='int', default=5, dest='max_rec_time', help='Maximum recording time for each file')
     parser.add_option('-l', '--threshold', type='int', default=30, dest='threshold', help='Minimum signal level to start recording')
     parser.add_option('-e', '--external_lock_file', type='string', dest='external_lock_file', help='Skip recording if file exists')
     parser.add_option('-i', '--external_trigger_file', type='string', dest='external_trigger_file', help='Start recording if file exists, regardless of level')
@@ -252,6 +295,7 @@ if __name__ == '__main__':
         a.listen()
     except KeyboardInterrupt:
         a.end()
+        print()
         sys.exit(0)
     except OSError as e:
         print("Error: %s" % str(e))

@@ -742,7 +742,6 @@ class OutgoingCallInitializer(object):
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=self.playback_wave_player)
             stream.bridge.add(self.playback_wave_player)
-            SIPApplication.voice_audio_bridge.add(self.playback_wave_player)
             self.playback_wave_player.start()
 
     def _NH_WavePlayerDidEnd(self, notification):
