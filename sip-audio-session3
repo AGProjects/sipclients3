@@ -750,21 +750,25 @@ class SIPAudioApplication(SIPApplication):
         self.registration_succeeded = True
 
     def _NH_SIPAccountRegistrationDidFail(self, notification):
-        self.output.put('%s Failed to register contact for sip:%s: %s (retrying in %.2f seconds)\n' % (datetime.now().replace(microsecond=0), self.account.id, notification.data.error, notification.data.retry_after))
+        if self.log_register:
+            self.output.put('%s Failed to register contact for sip:%s: %s (retrying in %.2f seconds)\n' % (datetime.now().replace(microsecond=0), self.account.id, notification.data.error, notification.data.retry_after))
         self.registration_succeeded = False
 
     def _NH_SIPAccountRegistrationDidEnd(self, notification):
-        self.output.put('%s Registration ended.\n' % datetime.now().replace(microsecond=0))
+        if self.log_register:
+            self.output.put('%s Registration ended.\n' % datetime.now().replace(microsecond=0))
 
     def _NH_BonjourAccountRegistrationDidSucceed(self, notification):
-        self.output.put('%s Registered Bonjour contact %s\n' % (datetime.now().replace(microsecond=0), notification.data.name))
+        if self.log_register:
+            self.output.put('%s Registered Bonjour contact %s\n' % (datetime.now().replace(microsecond=0), notification.data.name))
 
     def _NH_BonjourAccountRegistrationDidFail(self, notification):
         pass
         #self.output.put('%s Failed to register Bonjour contact: %s\n' % (datetime.now().replace(microsecond=0), notification.data.reason))
 
     def _NH_BonjourAccountRegistrationDidEnd(self, notification):
-        self.output.put('%s Registration ended.\n' % datetime.now().replace(microsecond=0))
+        if self.log_register:
+            self.output.put('%s Registration ended.\n' % datetime.now().replace(microsecond=0))
 
     def _NH_BonjourAccountDidAddNeighbour(self, notification):
         neighbour, record = notification.data.neighbour, notification.data.record
