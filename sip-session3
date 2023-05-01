@@ -804,13 +804,11 @@ class OutgoingCallInitializer(object):
             #show_notice('SIP session failed: %s' % notification.data.failure_reason)
 
     def _playback_end(self):
-
         script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.remote_identity)
 
         if os.path.exists(script):
             show_notice("Running script %s" % script)
             p = subprocess.Popen(script)
-        
         
         save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
         show_notice("Saved playback file to %s" % save_path)

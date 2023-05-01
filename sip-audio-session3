@@ -203,6 +203,7 @@ class SIPAudioApplication(SIPApplication):
         self.disable_hanguptone = False
 
         self.enable_playback = False
+        self.play_failure_code = False
 
     def _write(self, message):
         sys.stdout.write(message)
@@ -219,6 +220,7 @@ class SIPAudioApplication(SIPApplication):
         self.batch_mode = options.batch_mode
         self.enable_video = options.enable_video
         self.log_register = options.log_register
+        self.play_failure_code = options.play_failure_code
         self.input = InputThread() if not self.batch_mode else None
         self.output = EventQueue(self._write)
         self.logger = Logger(sip_to_stdout=options.trace_sip, pjsip_to_stdout=options.trace_pjsip, notifications_to_stdout=options.trace_notifications)
@@ -913,8 +915,30 @@ class SIPAudioApplication(SIPApplication):
     def _NH_SIPSessionDidFail(self, notification):
         self.play_file = None
         self._remove_lock()
-
         session = notification.sender
+        script = "%s/%s-%s-fail" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
+        if os.path.exists(script):
+            self.output.put("Running script %s" % script)
+            p = subprocess.Popen(script)
+
+        code = notification.data.code
+        
+        if code and self.play_failure_code:
+            if code == 486:
+                text = 'User is busy'
+            elif code == 404:
+                text = 'User not found'
+            elif code == 480:
+                text = 'User not online'
+            else:
+                text = str(notification.data.code)
+            try:
+                p = subprocess.Popen(['festival', '--tts', '--pipe'], stdin=subprocess.PIPE)
+            except FileNotFoundError:
+                pass
+            else:
+                p.communicate(text.encode())
+        
         if not self.disable_ringtone:
             if session.direction == 'incoming' and session in self.incoming_sessions:
                 if self.wave_inbound_ringtone:
@@ -938,7 +962,7 @@ class SIPAudioApplication(SIPApplication):
                 self.stop()
                 self.end_cancel_thread()
         else:
-            self.output.put('Session failed: %s\n' % notification.data.failure_reason)
+            self.output.put('Session failed: %s %s\n' % (notification.data.code, notification.data.failure_reason))
             if session is self.outgoing_session and not self.enable_playback:
                self.stop()
                self.end_cancel_thread()
@@ -1473,6 +1497,7 @@ if __name__ == '__main__':
     parser.set_default('auto_hangup_interval', None)
     parser.add_option('--auto-hangup', action='callback', callback=parse_handle_call_option, callback_args=('auto_hangup_interval',), help='Interval after which to hang up an established session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (hangup the session as soon as it connects).', metavar='[INTERVAL]')
     parser.add_option('-b', '--batch', action='store_true', dest='batch_mode', default=False, help='Run the program in batch mode: reading input from the console is disabled and the option --auto-answer is implied. This is particularly useful when running this script in a non-interactive environment.')
+    parser.add_option('-f', '--play-failure-code', action='store_true', dest='play_failure_code', default=False, help='Play failure code using festival.')
     parser.add_option('-D', '--daemonize', action='store_true', dest='daemonize', default=False, help='Enable running this program as a deamon.')
     options, args = parser.parse_args()
 
