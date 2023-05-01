@@ -421,18 +421,18 @@ class SIPAudioApplication(SIPApplication):
             self.playback_queue.start()
             reactor.callLater(3, self.poll_playback_directory)
             
-        if not self.disable_ringtone:
-            self.output.put('Available audio input devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.input_devices)))
-            self.output.put('Available audio output devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.output_devices)))
-            self.output.put('Available audio codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_codecs]))
-            self.output.put('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
+        self.output.put('Available audio input devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.input_devices)))
+        self.output.put('Available audio output devices: %s\n' % ', '.join(['None', 'system_default'] + sorted(engine.output_devices)))
+        self.output.put('Available audio codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_codecs]))
+        self.output.put('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
 
-            if engine.video_devices:
-                self.output.put('Available cameras: %s\n' % ', '.join(sorted(engine.video_devices)))
-        else:
-            if self.enable_video:
-                self.output.put('No camera present, video is disabled')
-                self.enable_video = False
+        if engine.video_devices:
+            self.output.put('Available cameras: %s\n' % ', '.join(sorted(engine.video_devices)))
+
+        if self.enable_video:
+            self.output.put('No camera present, video is disabled')
+            self.enable_video = False
+
         if self.voice_audio_mixer.input_device == 'system_default':
             self.output.put('Using audio input device: %s (system default device)\n' % self.voice_audio_mixer.real_input_device)
         else:
@@ -488,7 +488,7 @@ class SIPAudioApplication(SIPApplication):
         if self.play_file:
             lock_file = "%s/playback.lock" % self.playback_dir
             Path(lock_file).touch()
-            self.output.put("Lock file %s created" % lock_file)
+            self.output.put("Lock file %s created\n" % lock_file)
             
         if '@' not in self.target:
             self.target = '%s@%s' % (self.target, self.account.id.domain)
@@ -531,7 +531,7 @@ class SIPAudioApplication(SIPApplication):
                     elif  is_ip_address and  self.account.sip.tls_name:
                         tls_name = self.account.sip.tls_name
                 
-            self.output.put('DNS lookup for %s' % uri)
+            self.output.put('DNS lookup for %s\n' % uri)
 
             lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=tls_name)
 
@@ -930,6 +930,8 @@ class SIPAudioApplication(SIPApplication):
                 text = 'User not found'
             elif code == 480:
                 text = 'User not online'
+            elif code == 408:
+                text = 'Connection failed'
             else:
                 text = str(notification.data.code)
             try:
@@ -1289,15 +1291,15 @@ class SIPAudioApplication(SIPApplication):
         if stream.type == 'audio' and self.play_file:
             script = "%s/scripts/%s-playback-start" % (self.playback_dir, self.target)
             if os.path.exists(script):
-                self.output.put("Running script %s" % script)
+                self.output.put("Running script %s\n" % script)
                 p = subprocess.Popen(script)
             else:
-                self.output.put("Script does not exist %s" % script)
+                self.output.put("Script does not exist %s\n" % script)
     
             self.playback_wave_player = WavePlayer(self.voice_audio_mixer, ResourcePath(self.play_file).normalized)
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=self.playback_wave_player)
-            self.output.put("Play back file %s\n" % self.play_file)
+            self.output.put("Playback file %s\n" % self.play_file)
             stream.bridge.add(self.playback_wave_player)
             self.playback_wave_player.start()
 
@@ -1363,7 +1365,7 @@ class SIPAudioApplication(SIPApplication):
     def _NH_WavePlayerDidFail(self, notification):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
-        self.output.put('Failed to play %s: %s' % (notification.sender.filename, notification.data.error))
+        self.output.put('Failed to play %s: %s\n' % (notification.sender.filename, notification.data.error))
         if notification.sender == self.playback_wave_player or self.play_file:
             self._playback_end()
             self.play_file = None
@@ -1389,11 +1391,11 @@ class SIPAudioApplication(SIPApplication):
     def _playback_end(self):
         script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.target)
         if os.path.exists(script):
-            self.output.put("Running script %s" % script)
+            self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
 
         save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-        self.output.put("Saved playback file to %s" % save_path)
+        self.output.put("Saved playback file to %s\n" % save_path)
         os.rename(self.play_file, save_path)
         self._remove_lock()
         
