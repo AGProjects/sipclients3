@@ -75,6 +75,8 @@ class Recorder:
         self.started_by_level = False
 
         devices = {}
+        orig_device = self.device
+        
         devices_text = []
         for i in range(0, numdevices):
             if (self.p.get_device_info_by_host_api_device_index(0, i).get('maxInputChannels')) > 0:
@@ -86,11 +88,12 @@ class Recorder:
 
                 devices_text.append("%s) %s" % (i, devices[i]))
 
-        print('Available devices: %s' % ", ".join(devices_text))
         try:
             print('Using audio device %s) %s at sample rate %d' % (self.device, devices[self.device], self.RATE))
         except KeyError:
-            print('Non existent audio device')
+            print('Non existent audio device %s' % orig_device)
+            print('Available devices: %s' % ", ".join(devices_text))
+            sys.exit(0)
 
         self.threshold = 0 if target == 'test' else options.threshold
         self.stream = self.p.open(format=self.FORMAT,
