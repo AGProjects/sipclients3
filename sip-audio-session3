@@ -918,7 +918,7 @@ class SIPAudioApplication(SIPApplication):
         session = notification.sender
         script = "%s/%s-%s-fail" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
         if os.path.exists(script):
-            self.output.put("Running script %s" % script)
+            self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
 
         code = notification.data.code
@@ -1004,7 +1004,7 @@ class SIPAudioApplication(SIPApplication):
 
         script = "%s/%s-%s-start" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
         if os.path.exists(script):
-            self.output.put("Running script %s" % script)
+            self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
 
     def _NH_SIPSessionDidStart(self, notification):
@@ -1189,7 +1189,7 @@ class SIPAudioApplication(SIPApplication):
 
         script = "%s/%s-%s-end" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
         if os.path.exists(script):
-            self.output.put("Running script %s" % script)
+            self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
 
         on_hold_streams = [stream for stream in chain(*(session.streams for session in self.started_sessions)) if stream.on_hold]
