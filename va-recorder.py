@@ -6,6 +6,7 @@ from ctypes import *
 from optparse import OptionParser
 from pathlib import Path
 import math
+import psutil
 import struct
 import wave
 import time
@@ -36,6 +37,21 @@ asound.snd_lib_error_set_handler(c_error_handler)
 f_name_directory = '%s/.sipclient/spool/playback' % Path.home()
 lock_file = '%s/.sipclient/spool/playback/playback.lock' % Path.home()
 
+def checkIfProcessRunning(processName):
+    '''
+    Check if there is any running process that contains the given name processName.
+    '''
+    #Iterate over the all the running process
+    for proc in psutil.process_iter():
+        try:
+            # Check if process name contains the given name string.
+            if processName.lower() in proc.name().lower():
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return False;
+
+    
 class Recorder:
     chunk = 1024
     FORMAT = pyaudio.paInt16
@@ -68,7 +84,10 @@ class Recorder:
         self.min_rec_time = options.min_rec_time
         self.max_rec_time = options.max_rec_time
         self.external_lock_file = options.external_lock_file
-        self.external_trigger_file = options.external_trigger_file
+        self.activate_by_file = options.activate_by_file
+        self.activate_by_level = options.activate_by_level > 0
+        self.threshold = options.activate_by_level
+        
         self.quiet = options.quiet
 
         self.started_by_file = False
@@ -95,7 +114,6 @@ class Recorder:
             print('Available devices: %s' % ", ".join(devices_text))
             sys.exit(0)
 
-        self.threshold = 0 if target == 'test' else options.threshold
         self.stream = self.p.open(format=self.FORMAT,
                                   channels=self.CHANNELS,
                                   rate=self.RATE,
@@ -109,6 +127,7 @@ class Recorder:
         i = 0
         lock_print = False
         external_lock_print = False
+        festival_print = False
         while True:
             i = i + 1 
             input = self.stream.read(self.chunk, exception_on_overflow = False)
@@ -138,13 +157,24 @@ class Recorder:
                         print("%s - external lock file %s absent, listen resumed" % (now, self.external_lock_file))
                     external_lock_print = False
             
+            if checkIfProcessRunning('festival'):
+                if not festival_print:
+                    print("%s - festival running, listen paused" % now)
+                    festival_print = True
+                continue
+            else:
+                if festival_print:
+                    print("%s - festival stopped, listen resumed" % now)
+                festival_print = False    
+            
             wait_print = False
 
-            if self.external_trigger_file:
-                if os.path.exists(self.external_trigger_file):
+            if self.activate_by_file:
+                if os.path.exists(self.activate_by_file):
                     self.started_by_file = True
-                    print('%s - recording by file %s' % (now, self.external_trigger_file))
-            elif rms_val >= self.threshold:
+                    print('%s - recording by file %s' % (now, self.activate_by_file))
+
+            if not self.started_by_file and self.activate_by_level and rms_val >= self.threshold:
                 print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
                 self.started_by_level = True
             
@@ -152,7 +182,7 @@ class Recorder:
                 self.record()
             else:
                 if not self.quiet:
-                    if self.external_trigger_file:
+                    if self.activate_by_file:
                         print("%s - listening, level %3d" % (now, rms_val), end='\r')
                     else:
                         print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
@@ -201,12 +231,12 @@ class Recorder:
                 self.write(b''.join(rec), rec_time)
             else:
                 if rec_time > 1:
-                    print("Skip too short recording %.1f seconds" % rec_time)
+                    print("%s - skip short recording of %.1f seconds" % (now, rec_time))
                 else:
                     print()
 
         if self.started_by_file:
-            while os.path.exists(self.external_trigger_file):
+            while os.path.exists(self.activate_by_file):
                 i = i + 1 
                 data = self.stream.read(self.chunk)
                 rms_val = self.rms(data)
@@ -292,10 +322,11 @@ if __name__ == '__main__':
     parser.add_option('-d', '--device', type='string', default='pulse', dest='device', help='Use selected input audio device')
     parser.add_option('-t', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
     parser.add_option('-m', '--min_rec_time', type='int', default=2, dest='min_rec_time', help='Minimum recording time to save recording')
-    parser.add_option('-M', '--max_rec_time', type='int', default=5, dest='max_rec_time', help='Maximum recording time for each file')
-    parser.add_option('-l', '--threshold', type='int', default=30, dest='threshold', help='Minimum signal level to start recording')
+    parser.add_option('-M', '--max_rec_time', type='int', default=15, dest='max_rec_time', help='Maximum recording time for each file')
+#    parser.add_option('-t', '--threshold', type='int', default=30, dest='threshold', help='Minimum signal level to start recording')
     parser.add_option('-e', '--external_lock_file', type='string', dest='external_lock_file', help='Skip recording if file exists')
-    parser.add_option('-i', '--external_trigger_file', type='string', dest='external_trigger_file', help='Start recording if file exists, regardless of level')
+    parser.add_option('-f', '--activate_by_file', type='string', dest='activate_by_file', help='Start recording if file exists, regardless of level')
+    parser.add_option('-l', '--activate_by_level', type='int', default=30, dest='activate_by_level', help='Start recording if sound exceeds this threshold level')
     parser.add_option('-q', '--quiet', action='store_true', dest='quiet', default=False, help='Minimize logging.')
     
     options, args = parser.parse_args()
