@@ -1137,7 +1137,7 @@ class SIPAudioApplication(SIPApplication):
     def _NH_SIPSessionDidEnd(self, notification):
         self.play_file = None
         self.end_cancel_thread()
-        self._remove_lock()
+        reactor.callLater(1, self._remove_lock)
         
         session = notification.sender
         if session is not self.active_session:
@@ -1379,7 +1379,6 @@ class SIPAudioApplication(SIPApplication):
             self._playback_end()
             self.play_file = None
             settings = SIPSimpleSettings()
-            api.sleep(0.3)
             rogertone = settings.sounds.roger_beep
             roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
             SIPApplication.voice_audio_bridge.add(roger_tone)
@@ -1397,7 +1396,6 @@ class SIPAudioApplication(SIPApplication):
         save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
         self.output.put("Saved playback file to %s\n" % save_path)
         os.rename(self.play_file, save_path)
-        self._remove_lock()
         
     def _remove_lock(self):
         lock_file = "%s/playback.lock" % self.playback_dir

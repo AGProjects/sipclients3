@@ -6,7 +6,6 @@ from ctypes import *
 from optparse import OptionParser
 from pathlib import Path
 import math
-import psutil
 import struct
 import wave
 import time
@@ -37,25 +36,9 @@ asound.snd_lib_error_set_handler(c_error_handler)
 f_name_directory = '%s/.sipclient/spool/playback' % Path.home()
 lock_file = '%s/.sipclient/spool/playback/playback.lock' % Path.home()
 
-def checkIfProcessRunning(processName):
-    '''
-    Check if there is any running process that contains the given name processName.
-    '''
-    #Iterate over the all the running process
-    for proc in psutil.process_iter():
-        try:
-            # Check if process name contains the given name string.
-            if processName.lower() in proc.name().lower():
-                return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-    return False;
-
-    
 class Recorder:
     chunk = 1024
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1
+    channels = 1
 
     @staticmethod
     def rms(frame):
@@ -79,23 +62,20 @@ class Recorder:
 
         self.target = target
         self.timeout_length = options.timeout
-        self.RATE = options.rate
+        self.rate = options.rate
         self.device = options.device
         self.min_rec_time = options.min_rec_time
         self.max_rec_time = options.max_rec_time
         self.external_lock_file = options.external_lock_file
-        self.activate_by_file = options.activate_by_file
-        self.activate_by_level = options.activate_by_level > 0
-        self.threshold = options.activate_by_level
-        
+        self.external_trigger_file = options.external_trigger_file
+        self.level_lock_file = options.level_lock_file
+        self.level_enable_file = options.level_enable_file
         self.quiet = options.quiet
 
         self.started_by_file = False
         self.started_by_level = False
 
         devices = {}
-        orig_device = self.device
-        
         devices_text = []
         for i in range(0, numdevices):
             if (self.p.get_device_info_by_host_api_device_index(0, i).get('maxInputChannels')) > 0:
@@ -107,16 +87,16 @@ class Recorder:
 
                 devices_text.append("%s) %s" % (i, devices[i]))
 
+        print('Available devices: %s' % ", ".join(devices_text))
         try:
-            print('Using audio device %s) %s at sample rate %d' % (self.device, devices[self.device], self.RATE))
+            print('Using audio device %s) %s at sample rate %d' % (self.device, devices[self.device], self.rate))
         except KeyError:
-            print('Non existent audio device %s' % orig_device)
-            print('Available devices: %s' % ", ".join(devices_text))
-            sys.exit(0)
+            print('Non existent audio device')
 
-        self.stream = self.p.open(format=self.FORMAT,
-                                  channels=self.CHANNELS,
-                                  rate=self.RATE,
+        self.threshold = 0 if target == 'test' else options.threshold
+        self.stream = self.p.open(format=pyaudio.paInt16,
+                                  channels=self.channels,
+                                  rate=self.rate,
                                   input=True,
                                   output=True,
                                   input_device_index=self.device,
@@ -127,7 +107,9 @@ class Recorder:
         i = 0
         lock_print = False
         external_lock_print = False
-        festival_print = False
+        level_lock_print = False
+        level_enable_print = False
+
         while True:
             i = i + 1 
             input = self.stream.read(self.chunk, exception_on_overflow = False)
@@ -156,33 +138,52 @@ class Recorder:
                     if external_lock_print:
                         print("%s - external lock file %s absent, listen resumed" % (now, self.external_lock_file))
                     external_lock_print = False
-            
-            if checkIfProcessRunning('festival'):
-                if not festival_print:
-                    print("%s - festival running, listen paused" % now)
-                    festival_print = True
-                continue
-            else:
-                if festival_print:
-                    print("%s - festival stopped, listen resumed" % now)
-                festival_print = False    
+
+            if self.level_lock_file:
+                if os.path.exists(self.level_lock_file):
+                    if not level_lock_print:
+                        print("%s - level lock file %s present, listen paused" % (now, self.level_lock_file))
+
+                    level_lock_print = True
+                    continue
+                else:
+                    if level_lock_print:
+                        print("%s - level lock file %s absent, listen resumed" % (now, self.level_lock_file))
+                    level_lock_print = False
+
             
             wait_print = False
 
-            if self.activate_by_file:
-                if os.path.exists(self.activate_by_file):
+            if self.external_trigger_file:
+                if os.path.exists(self.external_trigger_file):
+                    if not self.started_by_file:
+                        print('%s - recording by file %s' % (now, self.external_trigger_file))
                     self.started_by_file = True
-                    print('%s - recording by file %s' % (now, self.activate_by_file))
+            
+            if self.threshold and not self.started_by_file:
+                if self.level_enable_file:
+                    if not os.path.exists(self.level_enable_file):
+                        if not level_enable_print:
+                            print("%s - level enable file %s missing, listen paused" % (now, self.level_enable_file))
 
-            if not self.started_by_file and self.activate_by_level and rms_val >= self.threshold:
-                print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
-                self.started_by_level = True
+                        level_enable_print = True
+                        print("%s - not listening, level %3d" % (now, rms_val), end='\r')
+                        continue
+                    else:
+                        if level_enable_print:
+                            print("%s - level enable file %s present, listen resumed" % (now, self.level_enable_file))
+                        level_enable_print = False
+                
+                if rms_val >= self.threshold:
+                    if not self.started_by_level:
+                        print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
+                    self.started_by_level = True
             
             if self.started_by_level or self.started_by_file:
                 self.record()
             else:
                 if not self.quiet:
-                    if self.activate_by_file:
+                    if self.external_trigger_file:
                         print("%s - listening, level %3d" % (now, rms_val), end='\r')
                     else:
                         print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
@@ -196,8 +197,8 @@ class Recorder:
         recording = False
         i = 0 
 
-        #now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        #print('%s - now recording...' % now)
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print('%s - now recording...' % now)
 
         if self.started_by_level:        
             while current <= end:
@@ -230,13 +231,13 @@ class Recorder:
             if rec_time > self.min_rec_time:
                 self.write(b''.join(rec), rec_time)
             else:
-                if rec_time > 1:
-                    print("%s - skip short recording of %.1f seconds" % (now, rec_time))
+                if rec_time > 0:
+                    print("%s - skip too short recording of %.1f seconds" % (now, rec_time))
                 else:
                     print()
 
         if self.started_by_file:
-            while os.path.exists(self.activate_by_file):
+            while os.path.exists(self.external_trigger_file):
                 i = i + 1 
                 data = self.stream.read(self.chunk)
                 rms_val = self.rms(data)
@@ -290,14 +291,18 @@ class Recorder:
             print("%s - external lock file %s present, skip file" % (now, self.external_lock_file))
             return
 
+        if self.level_lock_file and os.path.exists(self.level_lock_file):
+            print("%s - level lock file %s present, skip file" % (now, self.level_lock_file))
+            return
+
         n_files = len(os.listdir(f_name_directory))
 
         tmp_filename = os.path.join(f_name_directory, '%s.tmp' % self.target)
 
         wf = wave.open(tmp_filename, 'wb')
-        wf.setnchannels(self.CHANNELS)
-        wf.setsampwidth(self.p.get_sample_size(self.FORMAT))
-        wf.setframerate(self.RATE)
+        wf.setnchannels(self.channels)
+        wf.setsampwidth(self.p.get_sample_size(pyaudio.paInt16))
+        wf.setframerate(self.rate)
         wf.writeframes(recording)
         wf.close()
         filename = os.path.join(f_name_directory, '%s.wav' % self.target)
@@ -320,13 +325,14 @@ if __name__ == '__main__':
     parser.print_usage = parser.print_help
     parser.add_option('-r', '--sample_rate', type='int', default='16000', dest='rate', help='Audio sample rate')
     parser.add_option('-d', '--device', type='string', default='pulse', dest='device', help='Use selected input audio device')
-    parser.add_option('-t', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
-    parser.add_option('-m', '--min_rec_time', type='int', default=2, dest='min_rec_time', help='Minimum recording time to save recording')
-    parser.add_option('-M', '--max_rec_time', type='int', default=15, dest='max_rec_time', help='Maximum recording time for each file')
-#    parser.add_option('-t', '--threshold', type='int', default=30, dest='threshold', help='Minimum signal level to start recording')
+    parser.add_option('-T', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
+    parser.add_option('-m', '--min_rec_time', type='int', default=1, dest='min_rec_time', help='Minimum recording time to save recording')
+    parser.add_option('-M', '--max_rec_time', type='int', default=5, dest='max_rec_time', help='Maximum recording time for each file')
+    parser.add_option('-t', '--threshold', type='int', default=10, dest='threshold', help='Minimum signal level to start recording')
+    parser.add_option('-l', '--level_lock_file', type='string', dest='level_lock_file', help='Skip level recording if file exists')
+    parser.add_option('-L', '--level_enable_file', type='string', dest='level_enable_file', help='Enable level recording only if file exists')
     parser.add_option('-e', '--external_lock_file', type='string', dest='external_lock_file', help='Skip recording if file exists')
-    parser.add_option('-f', '--activate_by_file', type='string', dest='activate_by_file', help='Start recording if file exists, regardless of level')
-    parser.add_option('-l', '--activate_by_level', type='int', default=30, dest='activate_by_level', help='Start recording if sound exceeds this threshold level')
+    parser.add_option('-E', '--external_trigger_file', type='string', dest='external_trigger_file', help='Start recording if file exists, regardless of level')
     parser.add_option('-q', '--quiet', action='store_true', dest='quiet', default=False, help='Minimize logging.')
     
     options, args = parser.parse_args()

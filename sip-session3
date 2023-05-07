@@ -695,9 +695,8 @@ class OutgoingCallInitializer(object):
             self.wave_ringtone = None
         ui.status = 'Connecting...'
 
-
     def _NH_SIPSessionDidEnd(self, notification):
-        self._remove_lock()
+        reactor.callLater(1, self._remove_lock)
 
     def _NH_SIPSessionDidStart(self, notification):
         notification_center = NotificationCenter()
@@ -778,6 +777,7 @@ class OutgoingCallInitializer(object):
                                     
     def _NH_SIPSessionDidFail(self, notification):
         self._remove_lock()
+
         notification_center = NotificationCenter()
         session = notification.sender
         notification_center.remove_observer(self, sender=session)
@@ -813,7 +813,6 @@ class OutgoingCallInitializer(object):
         save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
         show_notice("Saved playback file to %s" % save_path)
         os.rename(self.play_file, save_path)
-        self._remove_lock()
         
     def _remove_lock(self):
         lock_file = "%s/playback.lock" % self.playback_dir
