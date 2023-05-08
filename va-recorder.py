@@ -191,7 +191,10 @@ class Recorder:
                     if self.external_trigger_file:
                         print("%s - listening, level %3d" % (now, rms_val), end='\r')
                     else:
-                        print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
+                        if self.target == 'test':
+                            print("%s - listening, level %3d" % (now, rms_val), end='\r')
+                        else:
+                            print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
 
     def record(self):
         rec = []
