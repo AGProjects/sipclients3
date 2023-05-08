@@ -6,6 +6,7 @@ from ctypes import *
 from optparse import OptionParser
 from pathlib import Path
 import math
+import platform
 import struct
 import wave
 import time
@@ -24,12 +25,16 @@ ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
 def py_error_handler(filename, line, function, err, fmt):
   pass
   #print('messages are yummy')
-c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
-asound = cdll.LoadLibrary('libasound.so')
-# Set error handler
-asound.snd_lib_error_set_handler(c_error_handler)
 
-# import sounddevice as sd
+try:
+    asound = cdll.LoadLibrary('libasound.so')
+    # Set error handler
+    c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+    asound.snd_lib_error_set_handler(c_error_handler)
+except OSError:
+    pass
+
+#import sounddevice as sd
 #devices = sd.query_devices()
 #print(devices)
 
@@ -323,8 +328,11 @@ if __name__ == '__main__':
     usage = '%prog [options] [user@domain]'
     parser = OptionParser(usage=usage, description=description)
     parser.print_usage = parser.print_help
+    os_type = platform.system()
+    default_device = 'pulse' if os_type == 'Linux' else '1'
+    
     parser.add_option('-r', '--sample_rate', type='int', default='16000', dest='rate', help='Audio sample rate')
-    parser.add_option('-d', '--device', type='string', default='pulse', dest='device', help='Use selected input audio device')
+    parser.add_option('-d', '--device', type='string', default=default_device, dest='device', help='Use selected input audio device')
     parser.add_option('-T', '--timeout', type='int', default=2, dest='timeout', help='Silence timeout to stop recording')
     parser.add_option('-m', '--min_rec_time', type='int', default=1, dest='min_rec_time', help='Minimum recording time to save recording')
     parser.add_option('-M', '--max_rec_time', type='int', default=5, dest='max_rec_time', help='Maximum recording time for each file')
