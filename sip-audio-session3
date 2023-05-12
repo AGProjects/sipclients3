@@ -914,7 +914,6 @@ class SIPAudioApplication(SIPApplication):
 
     def _NH_SIPSessionDidFail(self, notification):
         self.play_file = None
-        self._remove_lock()
         session = notification.sender
         script = "%s/%s-%s-fail" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
         if os.path.exists(script):
@@ -983,6 +982,7 @@ class SIPAudioApplication(SIPApplication):
                 self.tone_ringtone.stop()
 
         self.success = False
+        self._remove_lock()
 
     def _NH_SIPSessionWillStart(self, notification):
         session = notification.sender
