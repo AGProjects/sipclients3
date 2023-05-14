@@ -57,6 +57,7 @@ def checkIfProcessRunning(processName):
 f_name_directory = '%s/.sipclient/spool/playback' % Path.home()
 lock_file = '%s/.sipclient/spool/playback/playback.lock' % Path.home()
 
+
 class Recorder:
     chunk = 1024
     channels = 1
@@ -80,6 +81,7 @@ class Recorder:
         self.p = pyaudio.PyAudio()
         info = self.p.get_host_api_info_by_index(0)
         numdevices = info.get('deviceCount')
+        self.locks = set()
 
         self.target = target
         self.timeout_length = options.timeout
@@ -124,12 +126,7 @@ class Recorder:
                                   frames_per_buffer=self.chunk)
 
     def listen(self):
-        wait_print = False
         i = 0
-        lock_print = False
-        external_lock_print = False
-        level_lock_print = False
-        level_enable_print = False
 
         while True:
             i = i + 1 
@@ -138,43 +135,61 @@ class Recorder:
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             if os.path.exists(lock_file):
-                if not lock_print:
+                if lock_file not in self.locks:
                     print("%s - lock file %s present, listen paused" % (now, lock_file))
-        
-                lock_print = True
+                self.locks.add(lock_file)
                 continue
             else:
-                if lock_print:
-                    print("%s - lock file %s absent, listen resumed" % (now, lock_file))
-                lock_print = False    
+                if lock_file in self.locks:
+                    print("%s - lock file %s absent" % (now, lock_file))
+                    self.remove_lock(lock_file)
+
+                    if len(self.locks) == 0:
+                        print("%s - listen resumed" % now)
 
             if self.external_lock_file:
                 if os.path.exists(self.external_lock_file):
-                    if not external_lock_print:
+                    if self.external_lock_file not in self.locks:
                         print("%s - external lock file %s present, listen paused" % (now, self.external_lock_file))
-
-                    external_lock_print = True
+                    self.locks.add(self.external_lock_file)
                     continue
                 else:
-                    if external_lock_print:
-                        print("%s - external lock file %s absent, listen resumed" % (now, self.external_lock_file))
-                    external_lock_print = False
+                    if self.external_lock_file in self.locks:
+                        print("%s - external lock file %s absent" % (now, self.external_lock_file))
+
+                        self.remove_lock(self.external_lock_file)
+                        if len(self.locks) == 0:
+                            print("%s - listen resumed" % now)
 
             if self.level_lock_file:
                 if os.path.exists(self.level_lock_file):
-                    if not level_lock_print:
+                    if self.level_lock_file not in self.locks:
                         print("%s - level lock file %s present, listen paused" % (now, self.level_lock_file))
 
-                    level_lock_print = True
+                    self.locks.add(self.level_lock_file)
                     continue
                 else:
-                    if level_lock_print:
-                        print("%s - level lock file %s absent, listen resumed" % (now, self.level_lock_file))
-                    level_lock_print = False
+                    if self.level_lock_file in self.locks:
+                        print("%s - level lock file %s absent" % (now, self.level_lock_file))
+                        self.remove_lock(self.level_lock_file)
 
-            
-            wait_print = False
+                        if len(self.locks) == 0:
+                            print("%s - listen resumed" % now)
 
+            fst = 'festival'
+            if checkIfProcessRunning(fst):
+                if fst not in self.locks:
+                    print("%s - festival running, listen paused" % now)
+                self.locks.add(fst)
+                continue
+            else:
+                if fst in self.locks:
+                    print("%s - festival stopped" % now)
+                    self.remove_lock(fst)
+
+                    if len(self.locks) == 0:
+                        print("%s - listen resumed" % now)
+                            
             if self.external_trigger_file:
                 if os.path.exists(self.external_trigger_file):
                     if not self.started_by_file:
@@ -184,16 +199,17 @@ class Recorder:
             if self.threshold and not self.started_by_file:
                 if self.level_enable_file:
                     if not os.path.exists(self.level_enable_file):
-                        if not level_enable_print:
+                        if self.level_enable_file not in self.locks:
                             print("%s - level enable file %s missing, listen paused" % (now, self.level_enable_file))
-
-                        level_enable_print = True
+                        self.locks.add(self.level_enable_file)
                         print("%s - not listening, level %3d" % (now, rms_val), end='\r')
                         continue
                     else:
-                        if level_enable_print:
-                            print("%s - level enable file %s present, listen resumed" % (now, self.level_enable_file))
-                        level_enable_print = False
+                        if self.level_enable_file in self.locks:
+                            print("%s - level enable file %s present" % (now, self.level_enable_file))
+                            self.remove_lock(self.level_enable_file)
+                            if len(self.locks) == 0:
+                                print("%s - listen resumed" % now)
                 
                 if rms_val >= self.threshold:
                     if not self.started_by_level:
@@ -211,6 +227,13 @@ class Recorder:
                             print("%s - listening, level %3d" % (now, rms_val), end='\r')
                         else:
                             print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
+
+    def remove_lock(self, lock):
+        try:
+            self.locks.remove(lock)
+        except KeyError:
+            pass
+            
 
     def record(self):
         rec = []
