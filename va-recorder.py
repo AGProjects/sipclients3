@@ -296,13 +296,11 @@ class Recorder:
                     print("%s - lock file %s detected" % (now, lock_file))
                     break
 
-            if rec_time > self.min_rec_time:
+            if rec_time >= self.min_rec_time:
                 self.write(b''.join(rec), rec_time)
             else:
-                if rec_time > 0:
-                    print("%s - skip too short recording of %.1f seconds" % (now, rec_time))
-                else:
-                    print()
+                print("%s - skip too short recording of %.1f seconds" % (now, rec_time))
+                return
 
         if self.started_by_file:
             while os.path.exists(self.external_trigger_file):
@@ -317,7 +315,7 @@ class Recorder:
                 rec.append(data)
 
                 rec_time = time.time() - start_time
-                if rec_time > self.max_rec_time:
+                if self.max_rec_time and rec_time > self.max_rec_time:
                     break
 
                 if os.path.exists(lock_file):
