@@ -323,8 +323,8 @@ class Recorder:
                     print("%s - lock file %s detected" % (now, lock_file))
                     break
 
-            print("%s - recorded %.1f seconds" % (now, rec_time))
-            self.write(b''.join(rec), rec_time)
+                print("%s - recorded %.1f seconds" % (now, rec_time))
+                self.write(b''.join(rec), rec_time)
 
         self.started_by_file = False
         self.started_by_level = False
