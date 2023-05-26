@@ -261,7 +261,8 @@ class Recorder:
             return
 
         recording = False
-        i = 0 
+        i = 0
+        rec_time = 0 
 
         self.start_recording_stream()
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -322,9 +323,10 @@ class Recorder:
                 if os.path.exists(lock_file):
                     print("%s - lock file %s detected" % (now, lock_file))
                     break
-
-                print("%s - recorded %.1f seconds" % (now, rec_time))
-                self.write(b''.join(rec), rec_time)
+            
+        if rec_time:
+            print("%s - recorded %.1f seconds" % (now, rec_time))
+            self.write(b''.join(rec), rec_time)
 
         self.started_by_file = False
         self.started_by_level = False
