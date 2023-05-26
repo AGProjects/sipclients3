@@ -61,6 +61,8 @@ lock_file = '%s/.sipclient/spool/playback/playback.lock' % Path.home()
 class Recorder:
     chunk = 1024
     channels = 1
+    stream = None
+    recording_stream = None
 
     @staticmethod
     def rms(frame):
@@ -117,7 +119,16 @@ class Recorder:
             print('Non existent audio device')
 
         self.threshold = 0 if target == 'test' else options.threshold
-        self.stream = self.p.open(format=pyaudio.paInt16,
+
+    def start_recording_stream(self):
+        if self.recording_stream:
+            self.stop_recording_stream()
+        
+        self.stream.stop_stream()
+        self.stream.close()
+        self.stream = None
+            
+        self.recording_stream = self.p.open(format=pyaudio.paInt16,
                                   channels=self.channels,
                                   rate=self.rate,
                                   input=True,
@@ -125,11 +136,25 @@ class Recorder:
                                   input_device_index=self.device,
                                   frames_per_buffer=self.chunk)
 
+    def stop_recording_stream(self):
+        self.recording_stream.stop_stream()
+        self.recording_stream.close()
+        self.recording_stream = None
+
     def listen(self):
         i = 0
 
         while True:
             i = i + 1 
+            if self.stream is None:
+                self.stream = self.p.open(format=pyaudio.paInt16,
+                                  channels=self.channels,
+                                  rate=self.rate,
+                                  input=True,
+                                  output=True,
+                                  input_device_index=self.device,
+                                  frames_per_buffer=self.chunk)
+
             input = self.stream.read(self.chunk, exception_on_overflow = False)
             rms_val = self.rms(input)
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -176,20 +201,6 @@ class Recorder:
                         if len(self.locks) == 0:
                             print("%s - listen resumed" % now)
 
-            fst = 'festival'
-            if checkIfProcessRunning(fst):
-                if fst not in self.locks:
-                    print("%s - festival running, listen paused" % now)
-                self.locks.add(fst)
-                continue
-            else:
-                if fst in self.locks:
-                    print("%s - festival stopped" % now)
-                    self.remove_lock(fst)
-
-                    if len(self.locks) == 0:
-                        print("%s - listen resumed" % now)
-                            
             if self.external_trigger_file:
                 if os.path.exists(self.external_trigger_file):
                     if not self.started_by_file:
@@ -202,7 +213,7 @@ class Recorder:
                         if self.level_enable_file not in self.locks:
                             print("%s - level enable file %s missing, listen paused" % (now, self.level_enable_file))
                         self.locks.add(self.level_enable_file)
-                        print("%s - not listening, level %3d" % (now, rms_val), end='\r')
+                        print("%s - not listening, level %4d" % (now, rms_val), end='\r')
                         continue
                     else:
                         if self.level_enable_file in self.locks:
@@ -212,45 +223,54 @@ class Recorder:
                                 print("%s - listen resumed" % now)
                 
                 if rms_val >= self.threshold:
-                    if not self.started_by_level:
-                        print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
+                    #if not self.started_by_level:
+                    #    print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
                     self.started_by_level = True
             
-            if self.started_by_level or self.started_by_file:
-                self.record()
+            if self.started_by_level:
+                self.record('level')
+            elif self.started_by_file:
+                self.record('file')
             else:
                 if not self.quiet:
                     if self.external_trigger_file:
-                        print("%s - listening, level %3d" % (now, rms_val), end='\r')
+                        print("%s - listening, level %4d" % (now, rms_val), end='\r')
+
                     else:
                         if self.target == 'test':
-                            print("%s - listening, level %3d" % (now, rms_val), end='\r')
+                            print("%s - listening, level %4d" % (now, rms_val), end='\r')
                         else:
-                            print("%s - listening, level %3d < %d" % (now, rms_val, self.threshold), end='\r')
+                            print("%s - listening, level %4d < %4d" % (now, rms_val, self.threshold), end='\r')
 
     def remove_lock(self, lock):
         try:
             self.locks.remove(lock)
         except KeyError:
             pass
-            
 
-    def record(self):
+    def record(self, source=None):
         rec = []
         current = time.time()
         end = time.time() + self.timeout_length
         start_time = current
+        fst = 'festival'
+        if checkIfProcessRunning(fst):
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self.started_by_file = False
+            self.started_by_level = False
+            return
 
         recording = False
         i = 0 
 
+        self.start_recording_stream()
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        print('%s - now recording...' % now)
+        print('%s - now recording by %s...' % (now, source))
 
         if self.started_by_level:        
             while current <= end:
                 i = i + 1 
-                data = self.stream.read(self.chunk)
+                data = self.recording_stream.read(self.chunk)
                 rms_val = self.rms(data)
                 now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -286,7 +306,7 @@ class Recorder:
         if self.started_by_file:
             while os.path.exists(self.external_trigger_file):
                 i = i + 1 
-                data = self.stream.read(self.chunk)
+                data = self.recording_stream.read(self.chunk)
                 rms_val = self.rms(data)
                 now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 if not self.quiet:
