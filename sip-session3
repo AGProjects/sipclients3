@@ -5,6 +5,7 @@ import glob
 import os
 import re
 import signal
+import json
 import sys
 import urllib.request, urllib.parse, urllib.error
 import random
@@ -190,7 +191,7 @@ class MessageSession(object):
             
         if self.route:
             self.routes = [self.route]
-            show_notice('%s Session to %s will start via %s' % (datetime.now().replace(microsecond=0), self.remote_uri, self.routes[0]))
+            show_notice('%s Message session to %s will start via %s' % (datetime.now().replace(microsecond=0), self.remote_uri, self.routes[0]))
 
             if not self.started:
                 self.message_queue.start()
@@ -248,7 +249,7 @@ class MessageSession(object):
 
         self.routes = notification.data.result
 
-        show_notice('%s Session to %s will start via %s' % (datetime.now().replace(microsecond=0), self.remote_uri, self.routes[0]))
+        show_notice('%s Message session to %s will start via %s' % (datetime.now().replace(microsecond=0), self.remote_uri, self.routes[0]))
 
         if not self.started:
             self.message_queue.start()
@@ -260,7 +261,7 @@ class MessageSession(object):
 
     def _NH_DNSLookupDidFail(self, notification):
         self.notification_center.remove_observer(self, sender=notification.sender)
-        show_notice('%s Session to %s failed: DNS lookup failed' % (datetime.now().replace(microsecond=0), self.remote_uri))
+        show_notice('%s Message session to %s failed: DNS lookup failed' % (datetime.now().replace(microsecond=0), self.remote_uri))
         self.message_queue.stop()
         
         if not self.routes:
@@ -418,6 +419,8 @@ class MessageSession(object):
         cpim_imdn_events = None
         imdn_timestamp = None
         imdn_id = None
+        from_header = FromHeader.new(from_header)
+        identity = '%s@%s' % (from_header.uri.user.decode(), from_header.uri.host.decode())
 
         if content_type == 'message/cpim':
             try:
@@ -440,7 +443,7 @@ class MessageSession(object):
                 else:
                     identity = from_header
                     
-                sender_identity = cpim_message.sender or data.from_header
+                sender_identity = cpim_message.sender or from_header
                 imdn_timestamp = cpim_message.timestamp
 
                 for h in cpim_message.additional_headers:
@@ -449,7 +452,7 @@ class MessageSession(object):
                     if h.name == "Disposition-Notification":
                         cpim_imdn_events = h.value
                         
-                if content_type == IMDNDocument.content_type:
+                if content_type == IMDNDocument.content_type and content_type not in ('text/pgp-private-key', 'text/pgp-public-key'):
                     document = IMDNDocument.parse(content)
                     imdn_message_id = document.message_id.value
                     imdn_status = document.notification.status.__str__()
@@ -459,8 +462,6 @@ class MessageSession(object):
                     reactor.callLater(2, setattr, ui, 'status', None)
                     show_notice(msg)
                     return
-
-            
         else:
             payload = SimplePayload.decode(data, content_type)
             from_header = FromHeader.new(from_header)
@@ -468,7 +469,7 @@ class MessageSession(object):
             content = payload.content
             content_type = payload.content_type
 
-        if cpim_imdn_events and imdn_timestamp:
+        if cpim_imdn_events and imdn_timestamp and content_type not in ('text/pgp-private-key', 'text/pgp-public-key', 'application/sylk-file-transfer'):
             if self.account.sms.enable_imdn:
                 if 'delivery' in cpim_imdn_events:
                     self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'delivered')
@@ -881,9 +882,11 @@ class IncomingCallInitializer(object):
         notification_center.remove_observer(self, sender=notification.sender)
         answer = notification.data.answer
         self.question = None
+        show_notice('Got answer %s' % answer)
         if answer == 'a':
             if application.received_private_key:
-                show_notice('Please enter password to decrypt the key:')
+                self.question = Question("Please enter the pincode to decrypt the key...", 'ar', bold=True)
+                ui.add_question(self.question)
                 return
             self.session.accept(self.session.proposed_streams)
             ui.status = 'Accepting...'
@@ -1913,6 +1916,7 @@ class SIPSessionApplication(SIPApplication):
         encrypted = False
 
         if self.received_private_key:
+            show_notice('Handle private key')
             self.handle_private_keys(message_text, self.received_private_key)
             self.received_private_key = None
             return
@@ -2138,6 +2142,14 @@ class SIPSessionApplication(SIPApplication):
                 return
 
             (content_type, content, identity, msg_id, encrypted) = parsed_payload            
+            #if content_type not in ('text/pgp-private-key', 'text/pgp-public-key'):
+            #    self.message_session_to = None
+            #    message_session.end()
+            #    try:  
+            #        self.message_sessions.remove(message_session)
+            #    except KeyError:
+            #        pass
+                    
         else:
             content = data.body
             encrypted = False
@@ -2168,12 +2180,12 @@ class SIPSessionApplication(SIPApplication):
 
             is_composing = True
 
-
         if from_header.display_name:
             identity = '"%s" <%s>' % (from_header.display_name, identity)
             
         content = content.decode() if isinstance(content, bytes) else content
         content = content.strip()
+        #show_notice('Message type %s' % content_type)
 
         if is_composing:
             ui = UI()
@@ -2192,8 +2204,20 @@ class SIPSessionApplication(SIPApplication):
                         self.get_public_key(instance_id or remote_uri)
                         show_notice("Public key saved to %s" % public_key_path)
                         return
+
+                elif content_type == 'application/sylk-file-transfer':
+                    try:
+                        file_transfer = json.loads(content)
+                    except (TypeError, json.decoder.JSONDecodeError):
+                        pass 
+                    else:
+                        try:
+                            show_notice("%s %s sent file %s to %s" % (datetime.now().replace(microsecond=0), file_transfer['sender']['uri'], file_transfer['filename'], file_transfer['receiver']['uri']))
+                        except KeyError as e:
+                            show_notice(file_transfer)
+                    return
             
-                if content_type == 'text/pgp-private-key':
+                elif content_type == 'text/pgp-private-key':
                     public_key = ''
                     private_key_encrypted = ''
 
@@ -2237,7 +2261,7 @@ class SIPSessionApplication(SIPApplication):
                             content = bytes(decrypted_message.message, 'latin1').decode()
                             show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
 
-            if not encrypted and message_session and message_session.encryption.active and content_type != IsComposingDocument.content_type:
+            if not encrypted and message_session and message_session.encryption and message_session.encryption.active and content_type != IsComposingDocument.content_type:
                 show_notice("%s %s stopped the encryption" % (datetime.now().replace(microsecond=0), identity))
                 message_session.encryption.stop()
 
