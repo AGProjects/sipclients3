@@ -164,7 +164,12 @@ class Logger(object):
             direction = "SENDING"
         buf = ["%s: Packet %d, +%s" % (direction, self._siptrace_packet_count, (notification.datetime - self._siptrace_start_time))]
         buf.append("%(source_ip)s:%(source_port)d -(SIP over %(transport)s)-> %(destination_ip)s:%(destination_port)d" % notification.data.__dict__)
-        buf.append(notification.data.data.decode() if isinstance(notification.data.data, bytes) else notification.data.data)
+
+        try:
+            buf.append(notification.data.data.decode() if isinstance(notification.data.data, bytes) else notification.data.data)
+        except UnicodeDecodeError:
+            return
+            
         buf.append('--')
         message = '\n'.join(buf)
         if self.sip_to_stdout:
