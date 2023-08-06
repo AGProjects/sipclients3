@@ -147,6 +147,7 @@ class MessageSession(object):
         self.route = None
         self.ended = False
         self.route = route
+        self.notification_center = NotificationCenter()
 
         self.encryption = OTREncryption(self)
 
@@ -167,6 +168,7 @@ class MessageSession(object):
         except SIPCoreError:
             show_notice('Illegal SIP URI: %s' % target)
             self.target_uri = None
+            return
 
         self.notification_center = NotificationCenter()
 
@@ -433,15 +435,15 @@ class MessageSession(object):
                 payload = cpim_message
                 content_type = cpim_message.content_type
 
-                if cpim_message.sender:
-                    identity = '%s@%s' % (cpim_message.sender.uri.user.decode(), cpim_message.sender.uri.host.decode())
-                    if from_header.uri == cpim_message.sender.uri:
-                        if cpim_message.sender.display_name:
-                            identity = '"%s" <%s>' % (cpim_message.sender.display_name, identity)
-                        elif from_header.display_name:
-                            identity = '"%s" <%s>' % (from_header.display_name, identity)
-                else:
-                    identity = from_header
+                #if cpim_message.sender:
+                #    identity = '%s@%s' % (cpim_message.sender.uri.user.decode(), cpim_message.sender.uri.host.decode())
+                #    if from_header.uri == cpim_message.sender.uri:
+                #        if cpim_message.sender.display_name:
+                #            identity = '"%s" <%s>' % (cpim_message.sender.display_name, identity)
+                #        elif from_header.display_name:
+                #            identity = '"%s" <%s>' % (from_header.display_name, identity)
+                #else:
+                #    identity = from_header
                     
                 sender_identity = cpim_message.sender or from_header
                 imdn_timestamp = cpim_message.timestamp
@@ -2134,6 +2136,9 @@ class SIPSessionApplication(SIPApplication):
         else:
             route = None
 
+        if data.headers.get('X-Replicated-Message', Null).body:
+           return
+
         if content_type not in ('text/pgp-private-key', 'text/pgp-public-key'):
             message_session = self.message_session(identity, account=account, route=route)
             parsed_payload = message_session.handle_incoming_message(data.from_header, content_type, data.body, call_id)
@@ -2165,7 +2170,6 @@ class SIPSessionApplication(SIPApplication):
             refresh = msg.refresh.value if msg.refresh is not None else None
             content_type = msg.content_type.value if msg.content_type is not None else None
             last_active = msg.last_active.value if msg.last_active is not None else None
-            sender_identity = data.from_header
             #show_notice('Is composing state=%s, refresh=%s, last_active=%s' % (state, refresh, last_active))
 
             if state == 'active':
