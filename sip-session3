@@ -2702,7 +2702,7 @@ class SIPSessionApplication(SIPApplication):
         if video_option and video_option != '+video':
             raise TypeError()
         if self.outgoing_session is not None:
-            show_notice('Please cancel any outgoing sessions before makeing any new ones')
+            show_notice('Please cancel any outgoing sessions before starting a new one')
             return
         call_initializer = OutgoingCallInitializer(self.account, target, audio=True, video=video_option=='+video')
         call_initializer.start()
@@ -2711,7 +2711,7 @@ class SIPSessionApplication(SIPApplication):
         if chat_option and chat_option != '+chat':
             raise TypeError()
         if self.outgoing_session is not None:
-            show_notice('Please cancel any outgoing sessions before makeing any new ones')
+            show_notice('Please cancel any outgoing sessions before starting a new one')
             return
         call_initializer = OutgoingCallInitializer(self.account, target, audio=True, chat=chat_option=='+chat')
         call_initializer.start()
@@ -2752,7 +2752,7 @@ class SIPSessionApplication(SIPApplication):
         if audio_option and audio_option != '+audio':
             raise TypeError()
         if self.outgoing_session is not None:
-            show_notice('Please cancel any outgoing sessions before makeing any new ones')
+            show_notice('Please cancel any outgoing sessions before starting a new one')
             return
         call_initializer = OutgoingCallInitializer(self.account, target, audio=audio_option=='+audio', chat=True)
         call_initializer.start()
