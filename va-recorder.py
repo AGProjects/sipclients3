@@ -100,6 +100,8 @@ class Recorder:
         self.started_by_file = False
         self.started_by_level = False
 
+        print("Recording to %s" % (os.path.join(f_name_directory, '%s.wav' % self.target)))
+
         devices = {}
         devices_text = []
         for i in range(0, numdevices):
@@ -147,13 +149,17 @@ class Recorder:
         while True:
             i = i + 1 
             if self.stream is None:
-                self.stream = self.p.open(format=pyaudio.paInt16,
+                try:
+                    self.stream = self.p.open(format=pyaudio.paInt16,
                                   channels=self.channels,
                                   rate=self.rate,
                                   input=True,
                                   output=True,
                                   input_device_index=self.device,
                                   frames_per_buffer=self.chunk)
+                except ValueError as e:
+                    print("Invalid audio device %s" % self.device)
+                    break
 
             input = self.stream.read(self.chunk, exception_on_overflow = False)
             rms_val = self.rms(input)
@@ -213,7 +219,8 @@ class Recorder:
                         if self.level_enable_file not in self.locks:
                             print("%s - level enable file %s missing, listen paused" % (now, self.level_enable_file))
                         self.locks.add(self.level_enable_file)
-                        print("%s - not listening, level %4d" % (now, rms_val), end='\r')
+                        if sys.stdout.isatty():
+                            print("%s - not listening, level %4d" % (now, rms_val), end='\r')
                         continue
                     else:
                         if self.level_enable_file in self.locks:
@@ -234,13 +241,14 @@ class Recorder:
             else:
                 if not self.quiet:
                     if self.external_trigger_file:
-                        print("%s - listening, level %4d" % (now, rms_val), end='\r')
-
-                    else:
-                        if self.target == 'test':
+                        if sys.stdout.isatty():
                             print("%s - listening, level %4d" % (now, rms_val), end='\r')
-                        else:
-                            print("%s - listening, level %4d < %4d" % (now, rms_val, self.threshold), end='\r')
+                    else:
+                        if sys.stdout.isatty():
+                            if self.target == 'test':
+                                print("%s - listening, level %4d" % (now, rms_val), end='\r')
+                            else:
+                                print("%s - listening, level %4d < %4d" % (now, rms_val, self.threshold), end='\r')
 
     def remove_lock(self, lock):
         try:
@@ -278,7 +286,7 @@ class Recorder:
                 if rms_val >= self.threshold: end = time.time() + self.timeout_length
                     #if not recording:
                 diff = time.time() - start_time
-                if not self.quiet:
+                if not self.quiet and sys.stdout.isatty():
                     print('%s - recording at level %3d for %.1f seconds' % (now, rms_val, diff), end='\r')
                 recording = True
 
@@ -308,8 +316,8 @@ class Recorder:
                 data = self.recording_stream.read(self.chunk)
                 rms_val = self.rms(data)
                 now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                if not self.quiet:
-                    print('%s - recording by file at level %3d' % (now, rms_val), end='\r')
+                if not self.quiet and sys.stdout.isatty():
+                        print('%s - recording by file at level %3d' % (now, rms_val), end='\r')
                 recording = True
                 current = time.time()
                 rec.append(data)
