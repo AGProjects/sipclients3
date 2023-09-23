@@ -239,6 +239,7 @@ class MessageSession(object):
         handler = getattr(self, '_NH_%s' % notification.name, Null)
         handler(notification)
 
+
     def inject_otr_message(self, data):
         if not self.encryption.active:
             ui = UI()
@@ -305,7 +306,6 @@ class MessageSession(object):
 
         content = IMDNDocument.create(message_id=imdn_id, datetime=imdn_timestamp, recipient_uri=recipient, notification=notification)
         self.send_message(content.decode(), content_type=IMDNDocument.content_type)
-
             
     @run_in_green_thread           
     def _send_message(self, message):
@@ -1541,6 +1541,13 @@ class SIPSessionApplication(SIPApplication):
         self.must_exit = False
         self.last_failure_reason = None
         self.enable_playback = False
+
+    def handle_notification(self, notification):
+        alive_file = os.path.join(config_directory, 'last_notification')
+        Path(alive_file).touch()
+
+        handler = getattr(self, '_NH_%s' % notification.name, Null)
+        handler(notification)
 
     def start(self, target, options, filepath=None):
         notification_center = NotificationCenter()

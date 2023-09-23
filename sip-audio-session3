@@ -23,6 +23,7 @@ from lxml import html
 
 from application import log
 from application.notification import NotificationCenter, NotificationData
+from application.python import Null
 from application.process import process
 from application.python.queue import EventQueue
 from application.system import makedirs
@@ -313,7 +314,7 @@ class SIPAudioApplication(SIPApplication):
             if len(file.split('@')) == 2:
                 active_playback_dir = self.playback_dir + '/active'
                 basename = os.path.basename(file)
-                self.output.put("Audio recording detected %s" % basename)
+                self.output.put("Audio recording detected for %s\n" % basename)
                 filename = '%s/%s-%s' % (active_playback_dir, datetime.now().strftime("%Y%m%d-%H%M%S"), basename)
                 os.replace(file, filename)
                 play_object = {'target': os.path.splitext(basename)[0], 
@@ -323,8 +324,6 @@ class SIPAudioApplication(SIPApplication):
         reactor.callLater(0.1, self.poll_playback_directory)
 
     def _handle_outgoing_playback(self, play_object):
-        print(play_object)
-    
         self.play_file = play_object['filename']
         self.start_outgoing_call(play_object['target'])
         
@@ -407,6 +406,13 @@ class SIPAudioApplication(SIPApplication):
             settings.audio.output_device = 'system_default'
             settings.audio.alert_device = 'system_default'
 
+    def handle_notification(self, notification):
+        alive_file = os.path.join(self.config_directory, 'last_notification')
+        Path(alive_file).touch()
+
+        handler = getattr(self, '_NH_%s' % notification.name, Null)
+        handler(notification)
+        
     def _NH_SIPApplicationDidStart(self, notification):
         engine = Engine()
         settings = SIPSimpleSettings()

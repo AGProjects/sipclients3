@@ -172,7 +172,7 @@ class Recorder:
                 continue
             else:
                 if lock_file in self.locks:
-                    print("%s - lock file %s absent" % (now, lock_file))
+                    #print("%s - lock file %s absent" % (now, lock_file))
                     self.remove_lock(lock_file)
 
                     if len(self.locks) == 0:
