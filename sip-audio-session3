@@ -537,7 +537,7 @@ class SIPAudioApplication(SIPApplication):
                     elif  is_ip_address and  self.account.sip.tls_name:
                         tls_name = self.account.sip.tls_name
                 
-            self.output.put('DNS lookup for %s\n' % uri)
+            #self.output.put('DNS lookup for %s\n' % uri)
 
             lookup.lookup_sip_proxy(uri, settings.sip.transport_list, tls_name=tls_name)
 
@@ -811,8 +811,10 @@ class SIPAudioApplication(SIPApplication):
     def _NH_DNSLookupDidSucceed(self, notification):
         notification_center = NotificationCenter()
         
-        result_text = ', '.join(('%s:%s (%s)' % (result.address, result.port, result.transport.upper()) for result in notification.data.result))
-        self.output.put("\nDNS lookup for %s succeeded: %s\n" % (self.target.host, result_text))
+        results = ('%s:%s (%s)' % (result.address, result.port, result.transport.upper()) for result in notification.data.result)
+        result_text = ', '.join(results)
+
+        self.output.put("\nDNS lookup for %s succeeded: %s\n" % (self.target.host.decode(), result_text))
 
         if self.end_session_if_needed():
             self.stop()
@@ -906,20 +908,26 @@ class SIPAudioApplication(SIPApplication):
 
     def _NH_SIPSessionNewOutgoing(self, notification):
         session = notification.sender
-        local_identity = str(session.local_identity.uri)
+        local_identity = str(session.local_identity.uri).split(":")[1]
         if session.local_identity.display_name:
             local_identity = '"%s" <%s>' % (session.local_identity.display_name, local_identity)
-        remote_identity = str(session.remote_identity.uri)
+        remote_identity = str(session.remote_identity.uri).split(":")[1]
         if session.remote_identity.display_name:
             remote_identity = '"%s" <%s>' % (session.remote_identity.display_name, remote_identity)
-        self.output.put("Initiating SIP %s session from %s to %s via %s...\n" % ('video' if self.enable_video else 'audio', local_identity, remote_identity, session.route))
+        self.output.put("Starting %s session from %s to %s via %s...\n" % ('video' if self.enable_video else 'audio', local_identity, remote_identity, session.route))
 
     def _NH_SIPSessionGotRingIndication(self, notification):
         if self.wave_outbound_ringtone and not self.disable_ringtone:
             self.wave_outbound_ringtone.start()
 
     def _NH_SIPSessionDidFail(self, notification):
+        if self.play_file:
+            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
+            self.output.put("Saved playback file to %s\n" % save_path)
+            os.rename(self.play_file, save_path)
+
         self.play_file = None
+        
         session = notification.sender
         script = "%s/%s-%s-fail" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
         if os.path.exists(script):
@@ -1399,14 +1407,11 @@ class SIPAudioApplication(SIPApplication):
             self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
 
-        save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-        self.output.put("Saved playback file to %s\n" % save_path)
-        os.rename(self.play_file, save_path)
-        
     def _remove_lock(self):
         lock_file = "%s/playback.lock" % self.playback_dir
         if os.path.exists(lock_file):
             self.outgoing_session = None
+            self.output.put("Lock file %s removed\n" % lock_file)
             os.remove(lock_file)
 
     def _NH_DefaultAudioDeviceDidChange(self, notification):
