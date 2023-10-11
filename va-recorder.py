@@ -230,8 +230,8 @@ class Recorder:
                                 print("%s - listen resumed" % now)
                 
                 if rms_val >= self.threshold:
-                    #if not self.started_by_level:
-                    #    print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
+                    if not self.started_by_level:
+                        print('%s - recording by level %3d > %d' % (now, rms_val, self.threshold))
                     self.started_by_level = True
             
             if self.started_by_level:
@@ -308,6 +308,8 @@ class Recorder:
                 self.write(b''.join(rec), rec_time)
             else:
                 print("%s - skip too short recording of %.1f seconds" % (now, rec_time))
+                self.started_by_level = False
+                self.started_by_file = False
                 return
 
         if self.started_by_file:
