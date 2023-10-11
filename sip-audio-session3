@@ -478,6 +478,10 @@ class SIPAudioApplication(SIPApplication):
             settings.tls.verify_server = True
             settings.save()
 
+        if self.options.mute:
+            self.output.put('Mute microphone at start\n')
+            self.voice_audio_mixer.muted = True
+            
         if self.target is not None:
             self.start_outgoing_call(target)
 
@@ -1504,6 +1508,7 @@ if __name__ == '__main__':
     parser.add_option('-i', '--external-id', type='string', dest='external_id', help='id used for call control from external application')
     parser.add_option('-v', '--spool-dir', type='string', dest='spool_dir', default=None, help='Spool dir for call control from external applications, default is /var/spool/sipclients/sessions')
     parser.add_option('-t', '--enable-default-devices',  action='store_true', dest='enable_default_devices', help='Use default audio devices')
+    parser.add_option('-m', '--mute',  action='store_true', dest='mute', help='Mute microphone')
     parser.add_option('-V', '--enable-video',  action='store_true', dest='enable_video', default=False, help='Enable video if camera is available')
     parser.set_default('auto_hangup_interval', None)
     parser.add_option('--auto-hangup', action='callback', callback=parse_handle_call_option, callback_args=('auto_hangup_interval',), help='Interval after which to hang up an established session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (hangup the session as soon as it connects).', metavar='[INTERVAL]')
