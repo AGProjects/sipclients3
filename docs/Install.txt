@@ -4,22 +4,23 @@ Installation procedure for SIP SIMPLE clients
 
 Home page: http://sipsimpleclient.org
 
-This document described the manual installation procedure for Linux and
+For installing the Debian package go to https://packages.ag-projects.com
+
+This document describes the manual installation procedure for Linux and
 MacOSX operating systems.
 
 
 Step 1. Install SIP SIMPLE client SDK
 -------------------------------------
 
-Follow the instructions in the docs directory of python-sipsimple,
+Follow the instructions in the docs directory of python3-sipsimple,
 available from:
 
-https://github.com/AGProjects/python-sipsimple
+https://github.com/AGProjects/python3-sipsimple
 
 
 Step 2. Install SIP SIMPLE clients
 ----------------------------------
 
 cd sipclients
-sudo python setup.py install
-
+pip3 install --user .
