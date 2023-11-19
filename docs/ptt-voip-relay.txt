@@ -1,0 +1,12 @@
+PTT Radio - VoIP relay
+----------------------
+
+Using va-recorder and sip-audio-session or sip-session scripts one can relay
+audio between a PTT radio and Voice over IP using SIP Protocol.
+
+A typical usage scenario would be two PTT radios in different geographical
+locations being bridged using VoIP over IP.
+
+The general purpose IO board provided by Raspberry Pi computer can control
+the PTT button of the Radio or detect when the radio has been paged from
+remote.  This software in this package completes the puzzle.
