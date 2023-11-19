@@ -10,8 +10,7 @@ This document describes the manual installation procedure for Linux and
 MacOSX operating systems.
 
 
-Step 1. Install SIP SIMPLE client SDK
--------------------------------------
+Install SIP SIMPLE client SDK from:
 
 Follow the instructions in the docs directory of python3-sipsimple,
 available from:
@@ -19,8 +18,31 @@ available from:
 https://github.com/AGProjects/python3-sipsimple
 
 
-Step 2. Install SIP SIMPLE clients
-----------------------------------
+Install SIP SIMPLE clients:
 
 cd sipclients
 pip3 install --user .
+
+
+Install Pulse audio server system-wide
+--------------------------------------
+
+See https://github.com/shivasiddharth/PulseAudio-System-Wide
+
+sudo apt-get update     
+sudo apt-get install git    
+cd /home/${USER}/
+git clone https://github.com/shivasiddharth/PulseAudio-System-Wide       
+cd ./PulseAudio-System-Wide/      
+sudo cp ./pulseaudio.service /etc/systemd/system/pulseaudio.service    
+sudo systemctl --system enable pulseaudio.service       
+sudo systemctl --system start pulseaudio.service       
+sudo cp ./client.conf /etc/pulse/client.conf        
+sudo sed -i '/^pulse-access:/ s/$/root,pi/' /etc/group
+
+#systemctl --user stop pulseaudio.socket && systemctl --user stop pulseaudio.service
+mkdir ~/.config/systemd
+mkdir ~/.config/systemd/user
+systemctl --user mask pulseaudio.socket
+systemctl --user mask pulseaudio.service
+
