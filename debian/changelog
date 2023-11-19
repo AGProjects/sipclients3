@@ -1,3 +1,25 @@
+sipclients (5.3.0) unstable; urgency=medium
+
+  * Update installation instructions
+  * Fixes for file transfers and messaging
+  * Added option to play failure code using festival
+  * Added polling for wavs function to sip-audio-session script
+  * Allow specify audio device by name and use pulse by default
+  * Added voice activated recorder
+  * Improve locking for outgoing call
+  * Added roger beep after playback wav
+  * Added option to auto-record voice calls
+  * Allow sip-audio-session to run scripts when calls start and end
+  * Added separate settings for hangup and ring tones 
+  * Added file to record voice activated audio
+  * Added option to disable ringtones
+  * Added functions to sip-session script to playback files from directory
+  * Added option to sip-audio-session to play back a wav file and hangup
+  * Fixed pgp key storage inside session
+  * Added PGP encryption for SIP Message
+
+ -- Adrian Georgescu <ag@ag-projects.com>  Sun, 19 Nov 2023 14:30:02 -0300
+
 sipclients (5.2.3) unstable; urgency=medium
 
   * Fixed reading proxy setting
