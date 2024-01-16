@@ -349,10 +349,10 @@ class SIPAudioApplication(SIPApplication):
         notification_center = NotificationCenter()
         settings = SIPSimpleSettings()
 
-        if 'armv7' in platform.platform() and settings.audio.echo_canceller.enabled:
-            self.output.put("Disable echo canceller on ARM architecture\n")
-            settings.audio.echo_canceller.enabled = False
-            settings.save()
+        #if 'armv7' in platform.platform() and settings.audio.echo_canceller.enabled:
+        #    self.output.put("Disable echo canceller on ARM architecture\n")
+        #    settings.audio.echo_canceller.enabled = False
+        #    settings.save()
 
         for account in account_manager.iter_accounts():
             if isinstance(account, Account):
