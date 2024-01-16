@@ -287,25 +287,20 @@ class SIPAudioApplication(SIPApplication):
             self.playback_dir = "%s/spool/playback" % self.config_directory
             makedirs(self.playback_dir)
 
-        if self.enable_playback:
-            lock_file = "%s/playback.lock" % self.playback_dir
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
+        self._remove_lock()
 
+        if self.enable_playback:
             self.playback_queue = EventQueue(self._handle_outgoing_playback)
 
             active_playback_dir = self.playback_dir + '/active'
             makedirs(active_playback_dir)
-
-            history_playback_dir = self.playback_dir + '/history'
-            makedirs(history_playback_dir)
 
             scripts_playback_dir = self.playback_dir + '/scripts'
             makedirs(scripts_playback_dir)
 
     def poll_playback_directory(self):
         if self.outgoing_session:
-            reactor.callLater(0.1, self.poll_playback_directory)
+            reactor.callLater(0.2, self.poll_playback_directory)
             return
 
         files = list(filter(os.path.isfile, glob.glob(self.playback_dir + "/*.wav")))
@@ -321,7 +316,7 @@ class SIPAudioApplication(SIPApplication):
                                'filename': filename}
                 self.playback_queue.put(play_object)
 
-        reactor.callLater(0.1, self.poll_playback_directory)
+        reactor.callLater(0.2, self.poll_playback_directory)
 
     def _handle_outgoing_playback(self, play_object):
         self.play_file = play_object['filename']
@@ -498,7 +493,7 @@ class SIPAudioApplication(SIPApplication):
         if self.play_file:
             lock_file = "%s/playback.lock" % self.playback_dir
             Path(lock_file).touch()
-            self.output.put("Lock file %s created\n" % lock_file)
+            #self.output.put("Lock file %s created\n" % lock_file)
             
         if '@' not in self.target:
             self.target = '%s@%s' % (self.target, self.account.id.domain)
@@ -720,7 +715,8 @@ class SIPAudioApplication(SIPApplication):
                 direction = session.direction
                 remote = "%s@%s" % (session.remote_identity.uri.user, session.remote_identity.uri.host)
                 filename = "%s-%s-%s.wav" % (datetime.now().strftime("%Y%m%d-%H%M%S"), remote, direction)
-                path = os.path.join(settings.audio.directory.normalized, session.account.id)
+                path = os.path.join(settings.audio.directory.normalized, session.account.id, datetime.now().strftime("%Y%m%d"))
+                makedirs(path)
                 audio_stream.start_recording(os.path.join(path, filename))
         elif notification.data.input == 'p':
             if self.rtp_statistics is None:
@@ -831,12 +827,12 @@ class SIPAudioApplication(SIPApplication):
 
     def _NH_DNSLookupDidFail(self, notification):
         self.output.put('DNS lookup failed: %s\n' % notification.data.error)
+
+        self._playback_end(failed_reason='outgoing-failed-DNS')
+
         if not self.enable_playback:
-            self.play_file = None
             self.stop()
             self.end_cancel_thread()
-
-        self._remove_lock()
 
     def auto_answer_allowed(self, uri):
        if not self.options.auto_answer_uris:
@@ -925,12 +921,9 @@ class SIPAudioApplication(SIPApplication):
             self.wave_outbound_ringtone.start()
 
     def _NH_SIPSessionDidFail(self, notification):
-        if self.play_file:
-            save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-            self.output.put("Saved playback file to %s\n" % save_path)
-            os.rename(self.play_file, save_path)
+        code = notification.data.code
 
-        self.play_file = None
+        self._playback_end(failed_reason='outgoing-failed-' + str(code))
         
         session = notification.sender
         script = "%s/%s-%s-fail" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
@@ -938,8 +931,6 @@ class SIPAudioApplication(SIPApplication):
             self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
 
-        code = notification.data.code
-        
         if code and self.play_failure_code:
             if code == 486:
                 text = 'User is busy'
@@ -1088,7 +1079,8 @@ class SIPAudioApplication(SIPApplication):
             direction = session.direction
             remote = "%s@%s" % (session.remote_identity.uri.user, session.remote_identity.uri.host)
             filename = "%s-%s-%s.wav" % (datetime.now().strftime("%Y%m%d-%H%M%S"), remote, direction)
-            path = os.path.join(settings.audio.directory.normalized, session.account.id)
+            path = os.path.join(settings.audio.directory.normalized, session.account.id, datetime.now().strftime("%Y%m%d"))
+            makedirs(path)
             audio_stream.start_recording(os.path.join(path, filename))
                 
     def _NH_SIPSessionWillEnd(self, notification):
@@ -1153,9 +1145,8 @@ class SIPAudioApplication(SIPApplication):
                 self.output.put('TLS Subject: %s\n' % certificate.subject)
         
     def _NH_SIPSessionDidEnd(self, notification):
-        self.play_file = None
         self.end_cancel_thread()
-        reactor.callLater(1, self._remove_lock)
+        reactor.callLater(0.1, self._remove_lock)
         
         session = notification.sender
         if session is not self.active_session:
@@ -1385,37 +1376,64 @@ class SIPAudioApplication(SIPApplication):
         notification_center.remove_observer(self, sender=notification.sender)
         self.output.put('Failed to play %s: %s\n' % (notification.sender.filename, notification.data.error))
         if notification.sender == self.playback_wave_player or self.play_file:
-            self._playback_end()
-            self.play_file = None
             if self.active_session:
                 self.active_session.end()
+        
+        self._playback_end(failed_reason='outgoing-failed-playback')
 
     def _NH_WavePlayerDidEnd(self, notification):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
-        if self.play_file:
-            self._playback_end()
-            self.play_file = None
-            settings = SIPSimpleSettings()
-            rogertone = settings.sounds.roger_beep
-            roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
-            SIPApplication.voice_audio_bridge.add(roger_tone)
-            roger_tone.start()
+
+        self._playback_end() 
             
         if notification.sender == self.playback_wave_player:
             self.active_session.end()
 
-    def _playback_end(self):
+    def _playback_end(self, failed_reason=None):
+        if not self.play_file:
+            return
+
+        settings = SIPSimpleSettings()
+
+        if failed_reason or not self.auto_record:
+            save_path = os.path.join(settings.audio.directory.normalized, self.account.id, datetime.now().strftime("%Y%m%d"))
+            makedirs(save_path)
+            base = Path(self.play_file).stem
+            ext = Path(self.play_file).suffix
+            save_path = save_path + '/' + base + '-' + (failed_reason or 'outgoing') + ext
+            self.output.put("Saved playback file to %s\n" % save_path)
+            os.rename(self.play_file, save_path)
+
+        if not failed_reason:
+            rogertone = settings.sounds.roger_beep
+            roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
+            SIPApplication.voice_audio_bridge.add(roger_tone)
+            roger_tone.start()
+        else:     
+            hangup_tone = WavePlayer(SIPApplication.voice_audio_mixer, ResourcePath('sounds/hangup_tone.wav').normalized)
+            SIPApplication.voice_audio_bridge.add(hangup_tone)
+            hangup_tone.start()
+            
         script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.target)
+
         if os.path.exists(script):
             self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
 
+        if os.path.exists(self.play_file):
+            try:
+                os.remove(self.play_file)
+            except OSError:
+                pass
+                
+        self.play_file = None
+
     def _remove_lock(self):
+        # used by external audio recorder to know if we are in call
         lock_file = "%s/playback.lock" % self.playback_dir
         if os.path.exists(lock_file):
             self.outgoing_session = None
-            self.output.put("Lock file %s removed\n" % lock_file)
             os.remove(lock_file)
 
     def _NH_DefaultAudioDeviceDidChange(self, notification):

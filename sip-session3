@@ -504,7 +504,6 @@ class MessageSession(object):
 
         return (content_type, content, identity, self.msg_id, encrypted)
 
-
     def _NH_SIPMessageDidSucceed(self, notification):
         self.notification_center.remove_observer(self, sender=notification.sender)
 
@@ -535,7 +534,6 @@ class MessageSession(object):
         else:
             ui.status = 'Message %s received by %s (code %d)' % (message.id, self.remote_uri, notification.data.code)
             reactor.callLater(4, setattr, ui, 'status', None)
-        
 
     def _NH_SIPMessageDidFail(self, notification):
         self.notification_center.remove_observer(self, sender=notification.sender)
@@ -666,7 +664,8 @@ class OutgoingCallInitializer(object):
         show_notice('Call to %s failed: DNS lookup error: %s' % (self.target, notification.data.error))
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
-        self._remove_lock()
+
+        self._playback_end(failed_reason='outgoing-failed-DNS')
 
     def _NH_SIPSessionNewOutgoing(self, notification):
         session = notification.sender
@@ -699,17 +698,31 @@ class OutgoingCallInitializer(object):
         ui.status = 'Connecting...'
 
     def _NH_SIPSessionDidEnd(self, notification):
-        reactor.callLater(1, self._remove_lock)
+        self._playback_end()
+        session = notification.sender
+        notification_center = NotificationCenter()
+        notification_center.remove_observer(self, sender=session)
 
     def _NH_SIPSessionDidStart(self, notification):
         notification_center = NotificationCenter()
         ui = UI()
         session = notification.sender
-        notification_center.remove_observer(self, sender=session)
         ui.status = 'Connected'
         reactor.callLater(2, setattr, ui, 'status', None)
 
+        application = SIPSessionApplication()
+
         for stream in notification.data.streams:
+            if application.auto_record:
+                settings = SIPSimpleSettings()
+                if stream.type == 'audio':
+                    direction = session.direction
+                    remote = "%s@%s" % (session.remote_identity.uri.user, session.remote_identity.uri.host)
+                    filename = "%s-%s-%s.wav" % (datetime.now().strftime("%Y%m%d-%H%M%S"), remote, direction)
+                    path = os.path.join(settings.audio.directory.normalized, session.account.id, datetime.now().strftime("%Y%m%d"))
+                    makedirs(path)
+                    stream.start_recording(os.path.join(path, filename))
+        
             if stream.type in ('audio', 'video'):
                 show_notice('%s session established using %s codec at %sHz' % (stream.type.title(), stream.codec.capitalize(), stream.sample_rate))
                 if stream.ice_active:
@@ -727,7 +740,7 @@ class OutgoingCallInitializer(object):
                 
         if session.remote_user_agent is not None:
             show_notice('Remote SIP User Agent is "%s"' % session.remote_user_agent)
-
+            
     def _NH_MediaStreamDidStart(self, notification):
         stream = notification.sender
         if stream.type == 'audio' and self.play_file:
@@ -736,10 +749,12 @@ class OutgoingCallInitializer(object):
                 show_notice("Running script %s" % script)
                 p = subprocess.Popen(script)
             else:
-                show_notice("Script does not exist %s" % script)
+                pass
+                #show_notice("Script does not exist %s" % script)
 
             file = ResourcePath(self.play_file).normalized
             show_notice("Playback file %s\n" % file)
+
             self.playback_wave_player = WavePlayer(SIPApplication.voice_audio_mixer, file)
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=self.playback_wave_player)
@@ -751,16 +766,6 @@ class OutgoingCallInitializer(object):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
         show_notice("Playback finished")
-        if self.play_file:
-            self._playback_end()
-            self.play_file = None
-            settings = SIPSimpleSettings()
-            api.sleep(0.3)
-            rogertone = settings.sounds.roger_beep
-            roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
-            show_notice("Play roger beep")
-            SIPApplication.voice_audio_bridge.add(roger_tone)
-            roger_tone.start()
 
         if notification.sender == self.playback_wave_player:
             application = SIPSessionApplication()
@@ -772,19 +777,20 @@ class OutgoingCallInitializer(object):
         notification_center.remove_observer(self, sender=notification.sender)
         show_notice('Playback %s failed: %s' % (notification.sender.filename, notification.data.error))
         if notification.sender == self.playback_wave_player or self.play_file:
-            self._playback_end()
-            self.play_file = None
+
             application = SIPSessionApplication()
             if application.outgoing_session:
                 application.outgoing_session.end()
+
+            self._playback_end(failed_reason='outgoing-failed-playback')
                                     
     def _NH_SIPSessionDidFail(self, notification):
-        self._remove_lock()
+        code = notification.data.code
+        self._playback_end(failed_reason='outgoing-failed-' + str(code))
 
         notification_center = NotificationCenter()
         session = notification.sender
         notification_center.remove_observer(self, sender=session)
-        self.play_file = None
         if self.playback_wave_player:
             SIPApplication.voice_audio_bridge.remove(self.playback_wave_player)
 
@@ -798,31 +804,65 @@ class OutgoingCallInitializer(object):
             self.wave_ringtone.stop()
             SIPApplication.voice_audio_bridge.remove(self.wave_ringtone)
             self.wave_ringtone = None
-        if notification.data.failure_reason == 'user request' and notification.data.code == 487:
+        if notification.data.failure_reason == 'user request' and code == 487:
             show_notice('SIP session cancelled')
         elif notification.data.failure_reason == 'user request':
-            show_notice('SIP session rejected by user (%d %s)' % (notification.data.code, notification.data.reason))
+            show_notice('SIP session rejected by user (%d %s)' % (code, notification.data.reason))
         else:
             pass
             #show_notice('SIP session failed: %s' % notification.data.failure_reason)
 
-    def _playback_end(self):
-        script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.remote_identity)
-
-        if os.path.exists(script):
-            show_notice("Running script %s" % script)
-            p = subprocess.Popen(script)
-        
-        save_path = self.playback_dir + '/history/' + os.path.basename(self.play_file)
-        show_notice("Saved playback file to %s" % save_path)
-        os.rename(self.play_file, save_path)
-        
     def _remove_lock(self):
+        # used by external audio recorder to know if we are in call
         lock_file = "%s/playback.lock" % self.playback_dir
         if os.path.exists(lock_file):
             os.remove(lock_file)
 
+    def _playback_end(self, failed_reason=None):
+        reactor.callLater(0.1, self._remove_lock)
 
+        if not self.play_file:
+            return
+
+        settings = SIPSimpleSettings()
+        application = SIPSessionApplication()
+
+        if failed_reason or not application.auto_record:
+            save_path = os.path.join(settings.audio.directory.normalized, self.account.id, datetime.now().strftime("%Y%m%d"))
+            makedirs(save_path)
+            base = Path(self.play_file).stem
+            ext = Path(self.play_file).suffix
+            save_path = save_path + '/' + base + '-' + (failed_reason or 'outgoing') + ext
+            show_notice("Saved playback file to %s\n" % save_path)
+            os.rename(self.play_file, save_path)
+
+        if not failed_reason:
+            settings = SIPSimpleSettings()
+            api.sleep(0.2)
+            rogertone = settings.sounds.roger_beep
+            roger_tone = WavePlayer(SIPApplication.voice_audio_mixer, rogertone.path.normalized)
+            show_notice("Play roger beep")
+            SIPApplication.voice_audio_bridge.add(roger_tone)
+            roger_tone.start()
+        else:     
+            api.sleep(0.2)
+            hangup_tone = WavePlayer(SIPApplication.voice_audio_mixer, ResourcePath('sounds/hangup_tone.wav').normalized)
+            SIPApplication.voice_audio_bridge.add(hangup_tone)
+            hangup_tone.start()
+            
+        script = "%s/scripts/%s-playback-end" % (self.playback_dir, self.remote_identity)
+        if os.path.exists(script):
+            show_notice("Running script %s\n" % script)
+            p = subprocess.Popen(script)
+
+        if os.path.exists(self.play_file):
+            try:
+                os.remove(self.play_file)
+            except OSError:
+                pass
+
+        self.play_file = None
+         
 @implementer(IObserver)
 class IncomingCallInitializer(object):
 
@@ -1541,6 +1581,7 @@ class SIPSessionApplication(SIPApplication):
         self.must_exit = False
         self.last_failure_reason = None
         self.enable_playback = False
+        self.auto_record = False
 
     def handle_notification(self, notification):
         alive_file = os.path.join(config_directory, 'last_notification')
@@ -1565,21 +1606,20 @@ class SIPSessionApplication(SIPApplication):
             self.playback_dir = "%s/spool/playback" % config_directory
             makedirs(self.playback_dir)
 
-        if self.enable_playback:
-            lock_file = "%s/playback.lock" % self.playback_dir
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
+        lock_file = "%s/playback.lock" % self.playback_dir
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
 
+        if self.enable_playback:
             self.playback_queue = EventQueue(self._handle_outgoing_playback)
 
             active_playback_dir = self.playback_dir + '/active'
             makedirs(active_playback_dir)
 
-            history_playback_dir = self.playback_dir + '/history'
-            makedirs(history_playback_dir)
-
             scripts_playback_dir = self.playback_dir + '/scripts'
             makedirs(scripts_playback_dir)
+
+        self.auto_record = options.auto_record
 
         ui.input.add_history(history_file)
 
@@ -1786,7 +1826,7 @@ class SIPSessionApplication(SIPApplication):
 
     def poll_playback_directory(self):
         if self.outgoing_session:
-            reactor.callLater(0.1, self.poll_playback_directory)
+            reactor.callLater(1, self.poll_playback_directory)
             return
 
         files = list(filter(os.path.isfile, glob.glob(self.playback_dir + "/*.wav")))
@@ -1802,7 +1842,7 @@ class SIPSessionApplication(SIPApplication):
                                'filename': filename}
                 self.playback_queue.put(play_object)
 
-        reactor.callLater(0.1, self.poll_playback_directory)
+        reactor.callLater(1, self.poll_playback_directory)
         
     def _handle_outgoing_playback(self, play_object):
         self.play_file = play_object['filename']
@@ -2405,6 +2445,7 @@ class SIPSessionApplication(SIPApplication):
             else:
                 self.active_session = None
             self._update_prompt()
+
         if session is self.outgoing_session:
             self.outgoing_session = None
 
@@ -2475,6 +2516,7 @@ class SIPSessionApplication(SIPApplication):
         notification_center = NotificationCenter()
         for stream in notification.data.added_streams:
             notification_center.add_observer(self, sender=stream)
+
         for stream in notification.data.removed_streams:
             notification_center.remove_observer(self, sender=stream)
 
@@ -2708,6 +2750,7 @@ class SIPSessionApplication(SIPApplication):
     def _CH_call(self, target, video_option=None):
         if video_option and video_option != '+video':
             raise TypeError()
+
         if self.outgoing_session is not None:
             show_notice('Please cancel any outgoing sessions before starting a new one')
             return
@@ -3175,11 +3218,16 @@ class SIPSessionApplication(SIPApplication):
                 direction = self.active_session.direction
                 remote = "%s@%s" % (self.active_session.remote_identity.uri.user, self.active_session.remote_identity.uri.host)
                 filename = "%s-%s-%s.wav" % (datetime.now().strftime("%Y%m%d-%H%M%S"), remote, direction)
-                path = os.path.join(settings.audio.directory.normalized, self.active_session.account.id)
-                audio_stream.start_recording(os.path.join(path, filename))
+                path = os.path.join(settings.audio.directory.normalized, self.active_session.account.id, datetime.now().strftime("%Y%m%d"))
+                try:
+                    audio_stream.start_recording(os.path.join(path, filename))
+                except RuntimeError as e:
+                    show_notice(str(e))
             else:
-                audio_stream.stop_recording()
-
+                try:
+                    audio_stream.stop_recording()
+                except RuntimeError as e:
+                    show_notice(str(e))
 
     def _CH_account(self, *args):
         account_manager = AccountManager()
