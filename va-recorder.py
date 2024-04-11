@@ -309,7 +309,6 @@ class Recorder:
             else:
                 print("%s - skip too short recording of %.1f seconds" % (now, rec_time))
                 self.started_by_level = False
-                self.started_by_file = False
                 return
 
         if self.started_by_file:
