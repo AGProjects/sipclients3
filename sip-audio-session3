@@ -309,7 +309,7 @@ class SIPAudioApplication(SIPApplication):
             if len(file.split('@')) == 2:
                 active_playback_dir = self.playback_dir + '/active'
                 basename = os.path.basename(file)
-                self.output.put("Audio recording detected for %s\n" % basename)
+                self.output.put("Audio recording detected: %s\n" % file)
                 filename = '%s/%s-%s' % (active_playback_dir, datetime.now().strftime("%Y%m%d-%H%M%S"), basename)
                 os.replace(file, filename)
                 play_object = {'target': os.path.splitext(basename)[0], 
@@ -418,7 +418,7 @@ class SIPAudioApplication(SIPApplication):
         self.ip_address_monitor.start()
 
         if self.enable_playback:
-            self.output.put("Polling %s for wav files" % self.playback_dir)
+            self.output.put("Polling %s for wav files\n" % self.playback_dir)
             self.playback_queue.start()
             reactor.callLater(3, self.poll_playback_directory)
             
@@ -927,6 +927,7 @@ class SIPAudioApplication(SIPApplication):
         
         session = notification.sender
         script = "%s/%s-%s-fail" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
+        self.output.put("Check for script %s\n" % script)
         if os.path.exists(script):
             self.output.put("Running script %s\n" % script)
             p = subprocess.Popen(script)
@@ -1431,9 +1432,10 @@ class SIPAudioApplication(SIPApplication):
 
     def _remove_lock(self):
         # used by external audio recorder to know if we are in call
+        self.outgoing_session = None
         lock_file = "%s/playback.lock" % self.playback_dir
         if os.path.exists(lock_file):
-            self.outgoing_session = None
+            self.output.put("Lock file %s removed\n" % lock_file)
             os.remove(lock_file)
 
     def _NH_DefaultAudioDeviceDidChange(self, notification):
