@@ -218,6 +218,7 @@ class SIPAudioApplication(SIPApplication):
         
         self.options = options
         self.target = target
+        self.auto_reconnect = options.auto_reconnect
         self.batch_mode = options.batch_mode
         self.enable_video = options.enable_video
         self.log_register = options.log_register
@@ -236,6 +237,7 @@ class SIPAudioApplication(SIPApplication):
         notification_center.add_observer(self, name='SIPSessionGotConferenceInfo')
         notification_center.add_observer(self, name='TLSTransportHasChanged')
         notification_center.add_observer(self, name='MediaStreamDidStart')
+        notification_center.add_observer(self, name='SessionMustReconnect')
         
         if self.input:
             self.input.start()
@@ -479,6 +481,10 @@ class SIPAudioApplication(SIPApplication):
             
         if self.target is not None:
             self.start_outgoing_call(target)
+
+    def _NH_SessionMustReconnect(self, notification):
+        self.output.put('Reconnecting session to %s\n' % notification.data.target)
+        self.start_outgoing_call(notification.data.target)
 
     def start_outgoing_call(self, target):
         self.target = target
@@ -830,9 +836,19 @@ class SIPAudioApplication(SIPApplication):
 
         self._playback_end(failed_reason='outgoing-failed-DNS')
 
-        if not self.enable_playback:
+        if not self.enable_playback and not self.options.auto_reconnect:
             self.stop()
             self.end_cancel_thread()
+
+        self.reconnect(10)
+
+    def reconnect(self, after=5):
+        if not self.auto_reconnect:
+           return
+
+        api.sleep(after)
+        notification_center = NotificationCenter()
+        notification_center.post_notification('SessionMustReconnect', data=NotificationData(target=str(self.target)))
 
     def auto_answer_allowed(self, uri):
        if not self.options.auto_answer_uris:
@@ -974,9 +990,11 @@ class SIPAudioApplication(SIPApplication):
                 self.end_cancel_thread()
         else:
             self.output.put('Session failed: %s %s\n' % (notification.data.code, notification.data.failure_reason))
-            if session is self.outgoing_session and not self.enable_playback:
+            if session is self.outgoing_session and not self.enable_playback and not self.auto_reconnect:
                self.stop()
                self.end_cancel_thread()
+
+            self.reconnect(10)
         
         if id(session) in self.answer_timers:
             timer = self.answer_timers[id(session)]
@@ -1193,9 +1211,13 @@ class SIPAudioApplication(SIPApplication):
             else:
                 self.active_session = None
 
-        if session is self.outgoing_session and not self.enable_playback:
-            self.stop()
-            self.end_cancel_thread()
+        if session is self.outgoing_session:
+            if notification.data.originator == 'remote' and self.auto_reconnect:
+                self.reconnect(5)
+            else:
+                if not self.enable_playback:
+                    self.stop()
+                    self.end_cancel_thread()
 
         script = "%s/%s-%s-end" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
         if os.path.exists(script):
@@ -1535,6 +1557,7 @@ if __name__ == '__main__':
     parser.add_option('-b', '--batch', action='store_true', dest='batch_mode', default=False, help='Run the program in batch mode: reading input from the console is disabled and the option --auto-answer is implied. This is particularly useful when running this script in a non-interactive environment.')
     parser.add_option('-f', '--play-failure-code', action='store_true', dest='play_failure_code', default=False, help='Play failure code using festival.')
     parser.add_option('-D', '--daemonize', action='store_true', dest='daemonize', default=False, help='Enable running this program as a deamon.')
+    parser.add_option('-R', '--auto-reconnect', action='store_true', dest='auto_reconnect', default=False, help='Auto reconnect call if disconnected by remote.')
     options, args = parser.parse_args()
 
     target = args[0] if args and not options.auto_answer_uris else None
