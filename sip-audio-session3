@@ -978,9 +978,12 @@ class SIPAudioApplication(SIPApplication):
         if notification.data.failure_reason == 'Call completed elsewhere' or notification.data.code == 487:
             self.output.put('Session cancelled\n')
             if session is self.outgoing_session:
-                if not self.enable_playback:
-                    self.stop()
-                    self.end_cancel_thread()
+                if self.auto_reconnect:
+                    self.reconnect(10)
+                else:
+                    if not self.enable_playback:
+                        self.stop()
+                        self.end_cancel_thread()
             if session in self.incoming_sessions:
                 self.incoming_sessions.remove(session)
         elif notification.data.failure_reason == 'user request':
