@@ -156,6 +156,7 @@ class CancelThread(Thread):
     def run(self):
         while not self.stopped:
             self.application.end_session_if_needed()
+            self.application.stop_if_needed()
             sleep(1)
 
     def stop(self):
@@ -275,7 +276,13 @@ class SIPAudioApplication(SIPApplication):
             log.error('Failed to create spool directory at {directory}: {exception!s}'.format(directory=self.spool_dir, exception=e))
         else:
             self.output.put("Using spool directory %s\n" % self.spool_dir)
+
+        stop_app_file = "%s/stop" % self.spool_dir
+        if os.path.exists(stop_app_file):
+            os.remove(stop_app_file)
             
+        self.output.put("To stop the app: touch %s\n" % stop_app_file)
+
         self.scripts_dir = "%s/scripts" % self.config_directory
         try:
             makedirs(self.scripts_dir)
@@ -1139,6 +1146,21 @@ class SIPAudioApplication(SIPApplication):
             return True
 
         return False
+
+    def stop_if_needed(self):
+        stop_file = self.spool_dir + "/stop"
+
+        if stop_file and os.path.exists(stop_file):
+            if self.active_session is not None:
+                self.output.put('Ending audio session...\n')
+                self.active_session.end()
+            elif self.outgoing_session is not None:
+                self.outgoing_session.end()
+            elif self.incoming_sessions:
+                session = self.incoming_sessions.pop(0)
+                session.reject()
+            self.stop()
+            self.end_cancel_thread()
 
     def end_cancel_thread(self):
         if self.stop_call_thread is not None:
