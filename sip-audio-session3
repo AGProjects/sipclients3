@@ -115,17 +115,29 @@ class RTPStatisticsThread(Thread):
         self.stopped = False
 
     def run(self):
+        notification_center = NotificationCenter()
+        last_active_session = None
         while not self.stopped:
             if self.application.active_session is not None and self.application.active_session.streams:
+                if last_active_session != self.application.active_session:
+                    last_rx_packets = 0
+                    lost_rtp_count = 0
+                last_active_session = self.application.active_session
                 audio_stream = self.application.active_session.streams[0]
                 stats = audio_stream.statistics
                 if stats is not None:
-                    self.application.output.put('%s RTP audio statistics: RTT=%d ms, packet loss=%.1f%%, jitter RX/TX=%d/%d ms\n' % 
-                            (datetime.now().replace(microsecond=0),
-                            stats['rtt']['avg'] / 1000,
-                            100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0,
-                            stats['rx']['jitter']['avg'] / 1000,
-                            stats['tx']['jitter']['avg'] / 1000))
+                    rx_packets = stats['rx']['packets'] - last_rx_packets
+                    last_rx_packets = stats['rx']['packets']
+                    if rx_packets == 0:
+                        lost_rtp_count = lost_rtp_count + 1
+                    else:
+                        lost_rtp_count = 0
+
+                    if lost_rtp_count:
+                        notification_center.post_notification('RTPWasLost', sender=self.application.active_session, data=NotificationData(count=lost_rtp_count))
+
+                    msg = '%s RTP audio statistics: RTT=%d ms, packet loss=%.1f%%, jitter RX/TX=%d/%d ms\n' % (datetime.now().replace(microsecond=0), stats['rtt']['avg'] / 1000, 100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0, stats['rx']['jitter']['avg'] / 1000, stats['tx']['jitter']['avg'] / 1000)
+                    notification_center.post_notification('RTPStatisticsLog', sender=self.application.active_session, data=NotificationData(line=msg))
                 
                 try:
                     video_stream = self.application.active_session.streams[1]
@@ -134,13 +146,9 @@ class RTPStatisticsThread(Thread):
                 else:
                     stats = video_stream.statistics
                     if stats is not None:
-                        self.application.output.put('%s RTP video statistics: RTT=%d ms, packet loss=%.1f%%, jitter RX/TX=%d/%d ms\n' % 
-                                (datetime.now().replace(microsecond=0),
-                                stats['rtt']['avg'] / 1000,
-                                100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0,
-                                stats['rx']['jitter']['avg'] / 1000,
-                                stats['tx']['jitter']['avg'] / 1000))
-                sleep(10)
+                        msg = '%s RTP video statistics: RTT=%d ms, packet loss=%.1f%%, jitter RX/TX=%d/%d ms\n' % (datetime.now().replace(microsecond=0), stats['rtt']['avg'] / 1000, 100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0, stats['rx']['jitter']['avg'] / 1000, stats['tx']['jitter']['avg'] / 1000)
+                        notification_center.post_notification('RTPStatisticsLog', sender=self.application.active_session, data=NotificationData(line=msg))
+                sleep(5)
 
     def stop(self):
         self.stopped = True
@@ -206,6 +214,8 @@ class SIPAudioApplication(SIPApplication):
 
         self.enable_playback = False
         self.play_failure_code = False
+        self.rtp_lost = False
+        self.show_rtp_statistics = False
 
     def _write(self, message):
         sys.stdout.write(message)
@@ -420,6 +430,9 @@ class SIPAudioApplication(SIPApplication):
     def _NH_SIPApplicationDidStart(self, notification):
         engine = Engine()
         settings = SIPSimpleSettings()
+
+        self.rtp_statistics = RTPStatisticsThread(self)
+        self.rtp_statistics.start()
 
         engine.trace_sip = self.logger.sip_to_stdout or settings.logs.trace_sip
         engine.log_level = settings.logs.pjsip_level if (self.logger.pjsip_to_stdout or settings.logs.trace_pjsip) else 0
@@ -732,13 +745,10 @@ class SIPAudioApplication(SIPApplication):
                 makedirs(path)
                 audio_stream.start_recording(os.path.join(path, filename))
         elif notification.data.input == 'p':
-            if self.rtp_statistics is None:
-                self.rtp_statistics = RTPStatisticsThread(self)
-                self.rtp_statistics.start()
+            self.show_rtp_statistics = not self.show_rtp_statistics
+            if self.show_rtp_statistics:
                 self.output.put('Output of RTP statistics on console is now activated\n')
             else:
-                self.rtp_statistics.stop()
-                self.rtp_statistics = None
                 self.output.put('Output of RTP statistics on console is now dectivated\n')
         elif notification.data.input == 'j':
             self.logger.pjsip_to_stdout = not self.logger.pjsip_to_stdout
@@ -848,6 +858,18 @@ class SIPAudioApplication(SIPApplication):
             self.end_cancel_thread()
 
         self.reconnect(10)
+
+    def _NH_RTPStatisticsLog(self, notification):
+        if not self.show_rtp_statistics:
+            return
+
+        self.output.put(notification.data.line)
+
+    def _NH_RTPWasLost(self, notification):
+        count = notification.data.count
+        self.account.rtp.hangup_on_timeout and count >= 4:
+            self.rtp_lost = True
+            notification.sender.end()
 
     def reconnect(self, after=5):
         if not self.auto_reconnect:
@@ -1237,12 +1259,19 @@ class SIPAudioApplication(SIPApplication):
                 self.active_session = None
 
         if session is self.outgoing_session:
+            rtp_lost = self.rtp_lost
+            self.rtp_lost = False
+
             if notification.data.originator == 'remote' and self.auto_reconnect:
                 self.reconnect(5)
             else:
-                if not self.enable_playback:
-                    self.stop()
-                    self.end_cancel_thread()
+                if rtp_lost and self.auto_reconnect:
+                    self.reconnect(5)
+                    self.rtp_lost = False
+                else:
+                    if not self.enable_playback:
+                        self.stop()
+                        self.end_cancel_thread()
 
         script = "%s/%s-%s-end" % (self.scripts_dir, str(session.remote_identity.uri).split(":")[1], session.direction)
         if os.path.exists(script):
@@ -1323,6 +1352,18 @@ class SIPAudioApplication(SIPApplication):
         if info.conference_description.resources:
             for file in info.conference_description.resources.files:
                 self.output.put('Conference shared file: %s (%s bytes)\n' % (file.name, file.size))
+
+    def _NH_RTPStreamDidTimeout(self, notification):
+        self.output.put('RTP timeout')
+        stream = notification.sender
+
+        if self.account.rtp.hangup_on_timeout:
+            try:
+                session = next(session for session in self.started_sessions if stream in session.streams)
+            except StopIteration:
+                self.output.put('Session not found')
+            else:
+                session.end()
 
     def _NH_RTPStreamICENegotiationStateDidChange(self, notification):
         data = notification.data

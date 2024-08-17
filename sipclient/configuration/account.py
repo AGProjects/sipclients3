@@ -11,6 +11,7 @@ from sipsimple.configuration.datatypes import MSRPTransport, SIPTransport
 
 class RTPSettingsExtension(RTPSettings):
     inband_dtmf = Setting(type=bool, default=False)
+    hangup_on_timeout = Setting(type=bool, default=False)
 
 
 class SoundsSettings(SettingsGroup):
