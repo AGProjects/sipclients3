@@ -867,7 +867,7 @@ class SIPAudioApplication(SIPApplication):
 
     def _NH_RTPWasLost(self, notification):
         count = notification.data.count
-        self.account.rtp.hangup_on_timeout and count >= 4:
+        if self.account.rtp.hangup_on_timeout and count >= 4:
             self.rtp_lost = True
             notification.sender.end()
 
