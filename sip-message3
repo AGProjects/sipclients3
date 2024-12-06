@@ -7,6 +7,7 @@ import signal
 import sys
 import termios
 import uuid
+import zlib
 
 from datetime import datetime
 from optparse import OptionParser
@@ -313,10 +314,19 @@ class SIPMessageApplication(SIPApplication):
         imdn_timestamp = None
         imdn_id = None
         
+        body = data.body
         is_cpim = False
+        content_encoding = data.headers.get('Content-Encoding', Null).body
+        if content_encoding == 'deflate':
+            try:
+                body = zlib.decompress(body)
+            except zlib.error as e:
+                self.output.put('Cannot decompress message: %s' % str(e))
+                return
+        
         if content_type == 'message/cpim':
             try:
-                cpim_message = CPIMPayload.decode(data.body)
+                cpim_message = CPIMPayload.decode(body)
             except CPIMParserError:
                 self.output.put("Incoming SMS from %s has invalid CPIM content" % identity)
                 return
@@ -332,7 +342,7 @@ class SIPMessageApplication(SIPApplication):
                     if h.name == "Disposition-Notification":
                         cpim_imdn_events = h.value
         else:
-            content = data.body
+            content = body
             content_type = data.content_type
             sender_identity = data.from_header
 
@@ -356,6 +366,7 @@ class SIPMessageApplication(SIPApplication):
 
     @run_in_green_thread           
     def send_imdn_notification(self, imdn_id, imdn_timestamp, recipient, sender_identity, event):
+        return
         self.output.put("Send %s notification for %s to %s\n" % (event, imdn_id, recipient))
     
         if event == 'delivered':

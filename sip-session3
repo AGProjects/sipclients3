@@ -13,6 +13,7 @@ import requests
 import uuid
 import pgpy
 import subprocess
+import zlib
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -2231,6 +2232,14 @@ class SIPSessionApplication(SIPApplication):
 
         if content_type not in ('text/pgp-private-key', 'text/pgp-public-key', IsComposingDocument.content_type):
             self.message_session_to = identity
+
+        content_encoding = data.headers.get('Content-Encoding', Null).body
+        if content_encoding == 'deflate':
+            try:
+                content = zlib.decompress(content)
+            except zlib.error as e:
+                show_notice('Cannot decompress message: %s' % str(e))
+                return
         
         if content_type == IsComposingDocument.content_type:
             # body must not be utf-8 decoded
