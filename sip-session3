@@ -38,8 +38,13 @@ from gnutls.crypto import X509Certificate, X509PrivateKey
 from twisted.internet import reactor
 from zope.interface import implementer
 
-from otr import OTRTransport, OTRState, SMPStatus
-from otr.exceptions import IgnoreMessage, UnencryptedMessage, EncryptedMessageError, OTRError, OTRFinishedError
+try:
+    from otr import OTRTransport, OTRState, SMPStatus
+    from otr.exceptions import IgnoreMessage, UnencryptedMessage, EncryptedMessageError, OTRError, OTRFinishedError
+except ModuleNotFoundError as e:
+    print('OTR library missing')
+    IgnoreMessage = None
+    pass
 
 from sipsimple.core import Engine, FromHeader, Message, RouteHeader, SIPCoreError, SIPURI, ToHeader
 
@@ -481,22 +486,23 @@ class MessageSession(object):
                     self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
                 
 #        if content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
-        try:
-            content = self.encryption.otr_session.handle_input(content, content_type)
-        except IgnoreMessage:
-            show_notice('OTR message %s received' % call_id)
-            return None
-        except UnencryptedMessage:
-            encrypted = False
-            encryption_active = True
-        except EncryptedMessageError as e:
-            show_notice('OTP encrypted message error: %s' % str(e))
-            return None
-        except (OTRError, OTRFinishedError) as e:
-            show_notice('OTP error: %s' % str(e))
-            return None
-        else:
-            encrypted = encryption_active = self.encryption.active
+        if IgnoreMessage:
+            try:
+                content = self.encryption.otr_session.handle_input(content, content_type)
+            except IgnoreMessage:
+                show_notice('OTR message %s received' % call_id)
+                return None
+            except UnencryptedMessage:
+                encrypted = False
+                encryption_active = True
+            except EncryptedMessageError as e:
+                show_notice('OTP encrypted message error: %s' % str(e))
+                return None
+            except (OTRError, OTRFinishedError) as e:
+                show_notice('OTP error: %s' % str(e))
+                return None
+            else:
+                encrypted = encryption_active = self.encryption.active
 
         if payload.charset is not None:
             content = content.decode(payload.charset)
@@ -569,8 +575,10 @@ class MessageSession(object):
             show_notice('%s Message %s to %s failed on %s: %s (%d)' % (datetime.now().replace(microsecond=0), message.id, self.remote_uri,  server or client, notification.data.reason.decode() if isinstance(notification.data.reason, bytes) else notification.data.reason, notification.data.code))
 
 
-OTRTransport.register(MessageSession)
-
+try:
+    OTRTransport.register(MessageSession)
+except NameError:
+    pass
 
 @implementer(IObserver)
 class OutgoingCallInitializer(object):
