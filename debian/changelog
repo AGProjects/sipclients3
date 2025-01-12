@@ -1,3 +1,24 @@
+sipclients (5.4.0) unstable; urgency=medium
+
+  * Fix appending local domain
+  * Survive OTR import error
+  * Decompress messages if compressed with zlib
+  * Auto reconnect calls after RTP timeout
+  * Check for stop file to stop the app from outside
+  * Fix reconnecting session if failed
+  * Added auto-reconnect for outgoing calls to sip-audio-session script
+  * Don't show registration logs if we have sessions
+  * Added option to auto-reconnect outgoing calls
+  * Mention location of scripts when handling calls
+  * Fix resetting outgoing session
+  * Refactor location of saved playbacked wavs
+  * Added auto-record for audio calls to sip-session script
+  * Don't disable echo cancellation for arm anymore
+  * Fixed reseting a variable in voice audio recorder
+  * Added ptt-voip-relay.txt doc
+
+ -- Adrian Georgescu <ag@ag-projects.com>  Sun, 12 Jan 2024 11:31:03 -0300
+
 sipclients (5.3.0) unstable; urgency=medium
 
   * Fixes for file transfers and messaging
