@@ -627,7 +627,7 @@ class OutgoingCallInitializer(object):
             show_notice('Illegal SIP URI: %s' % self.target)
         else:
             if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
-                self.target.host = '%s.%s' % (self.target.host, self.account.id.domain)
+                self.target.host = ('%s.%s' % (self.target.host.decode(), self.account.id.domain)).encode()
             lookup = DNSLookup()
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=lookup)
@@ -1270,7 +1270,7 @@ class OutgoingTransferHandler(object):
         show_notice('Preparing transfer...')
         self.file_selector = FileSelector.for_file(self.filepath)
         if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
-            self.target.host = '%s.%s' % (self.target.host, self.account.id.domain)
+            self.target.host = ('%s.%s' % (self.target.host.decode(), self.account.id.domain)).encode()
         lookup = DNSLookup()
         notification_center = NotificationCenter()
         notification_center.add_observer(self, sender=lookup)
