@@ -533,7 +533,7 @@ class SIPAudioApplication(SIPApplication):
                 self.stop()
         else:
             if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
-                self.target.host = '%s.%s' % (self.target.host, self.account.id.domain)
+                self.target.host = ('%s.%s' % (self.target.host.decode(), self.account.id.domain)).encode()
             lookup = DNSLookup()
             notification_center = NotificationCenter()
             settings = SIPSimpleSettings()
