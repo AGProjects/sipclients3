@@ -3216,7 +3216,10 @@ class SIPSessionApplication(SIPApplication):
         if self.active_session is not None:
             if self.active_session in self.sessions_with_proposals:
                 ui.status = 'Cancelling proposal...'
-                self.active_session.cancel_proposal()
+                try:
+                    self.active_session.cancel_proposal()
+                except IllegalStateError:
+                    self.outgoing_session.end()
             else:
                 ui.status = 'Ending SIP session...'
                 self.active_session.end()
