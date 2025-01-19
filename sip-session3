@@ -2753,6 +2753,8 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_SIPSessionTransferDidFail(self, notification):
         show_notice('Session transfer failed: %s (%s)' % (notification.data.reason, notification.data.code))
+        ui = UI()
+        ui.status = None
 
     def _NH_SIPSessionGotConferenceInfo(self, notification):
         info = notification.data.conference_info
