@@ -2064,7 +2064,7 @@ class SIPSessionApplication(SIPApplication):
         elif answer == 'r':
             if self.active_session:
                 ui.status = 'Rejecting transfer...'
-                self.active_session.accept_transfer()
+                self.active_session.reject_transfer()
 
     def _NH_SIPEngineGotException(self, notification):
         lines = ['An exception occured within the SIP core:']
