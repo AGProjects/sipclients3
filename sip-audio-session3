@@ -42,7 +42,7 @@ from sipsimple.configuration.settings import SIPSimpleSettings
 from sipsimple.core import Engine, SIPCoreError, SIPURI, ToHeader, Header, CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
 from sipsimple import __version__ as version
 from sipsimple.lookup import DNSLookup
-from sipsimple.session import Session
+from sipsimple.session import Session, IllegalStateError
 from sipsimple.streams import MediaStreamRegistry
 from sipsimple.storage import FileStorage
 
@@ -624,10 +624,13 @@ class SIPAudioApplication(SIPApplication):
                 session.reject()
         elif notification.data.input in ('y', 'n') and self.transfer_session:
             session = self.transfer_session
-            if notification.data.input == 'y':
-                session.accept_transfer()
-            else:
-                session.reject_transfer()
+            try:
+                if notification.data.input == 'y':
+                    session.accept_transfer()
+                else:
+                    session.reject_transfer()
+            except IllegalStateError:
+                pass
             self.transfer_session = False
         elif notification.data.input == 'm':
             self.voice_audio_mixer.muted = not self.voice_audio_mixer.muted

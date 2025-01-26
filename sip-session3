@@ -2060,11 +2060,17 @@ class SIPSessionApplication(SIPApplication):
         if answer == 'a':
             if self.active_session:
                 ui.status = 'Accepting transfer...'
-                self.active_session.accept_transfer()
+                try:
+                    self.active_session.accept_transfer()
+                except IllegalStateError:
+                    pass
         elif answer == 'r':
             if self.active_session:
                 ui.status = 'Rejecting transfer...'
-                self.active_session.reject_transfer()
+                try:
+                    self.active_session.reject_transfer()
+                except IllegalStateError:
+                    pass
 
     def _NH_SIPEngineGotException(self, notification):
         lines = ['An exception occured within the SIP core:']
