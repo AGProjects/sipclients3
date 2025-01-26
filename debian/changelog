@@ -2,7 +2,7 @@ sipclients (5.4.1) UNRELEASED; urgency=medium
 
   * Added more TLS certificate issuers
   * Reset status bar after call transfer fails
-  * Capture an exception
+  * Capture call transfer exceptions
 
  -- Adrian Georgescu <support@ag-projects.com>  Sun, 19 Jan 2025 21:16:19 +0100
 
