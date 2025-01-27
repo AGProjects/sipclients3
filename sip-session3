@@ -939,7 +939,7 @@ class IncomingCallInitializer(object):
         streams = '/'.join(stream.type for stream in self.session.proposed_streams)
         if self.session.replaced_session:
             self.session.accept(self.session.proposed_streams)
-            show_notice("Call was transfered to %s" % identity)
+            show_notice("SIP session was transfered to %s" % identity)
         else:
             self.question = Question("Incoming %s from %s, do you want to accept? (a)ccept/(r)eject/(b)usy" % (streams, identity), 'arbi', bold=True)
             notification_center.add_observer(self, sender=self.question)
@@ -2495,9 +2495,9 @@ class SIPSessionApplication(SIPApplication):
                 identity = str(self.active_session.remote_identity.uri)
                 if self.active_session.remote_identity.display_name:
                     identity = '"%s" <%s>' % (self.active_session.remote_identity.display_name, identity)
-                show_notice('Active SIP session: "%s" (%d/%d)' % (identity, self.connected_sessions.index(self.active_session)+1, len(self.connected_sessions)))
             else:
                 self.active_session = None
+
             self._update_prompt()
 
         if session is self.outgoing_session:
@@ -2507,6 +2507,8 @@ class SIPSessionApplication(SIPApplication):
         if not on_hold_streams and self.hold_tone is not None:
             self.hold_tone.stop()
             self.hold_tone = None
+
+        self._CH_sessions()
     
         if self.must_exit:
             self.stop()  
@@ -2605,7 +2607,7 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_RTPStreamDidEnableEncryption(self, notification):
         stream = notification.sender
-        show_notice("%s encryption activated using %s (%s)" % (stream.type.title(), stream.encryption.type, stream.encryption.cipher))
+        show_notice("%s encryption activated using %s (%s)" % (stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode() if isinstance(stream.encryption.cipher, bytes) else stream.encryption.cipher))
 
         if stream.encryption.type == 'ZRTP' and stream.type == 'audio':
             peer_name = stream.encryption.zrtp.peer_name if stream.encryption.zrtp.peer_name else None
