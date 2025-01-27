@@ -937,10 +937,14 @@ class IncomingCallInitializer(object):
         if self.session.remote_identity.display_name:
             identity = '"%s" <%s>' % (self.session.remote_identity.display_name, identity)
         streams = '/'.join(stream.type for stream in self.session.proposed_streams)
-        self.question = Question("Incoming %s from %s, do you want to accept? (a)ccept/(r)eject/(b)usy" % (streams, identity), 'arbi', bold=True)
-        notification_center.add_observer(self, sender=self.question)
-        ui = UI()
-        ui.add_question(self.question)
+        if self.session.replaced_session:
+            self.session.accept(self.session.proposed_streams)
+            show_notice("Call was transfered to %s" % identity)
+        else:
+            self.question = Question("Incoming %s from %s, do you want to accept? (a)ccept/(r)eject/(b)usy" % (streams, identity), 'arbi', bold=True)
+            notification_center.add_observer(self, sender=self.question)
+            ui = UI()
+            ui.add_question(self.question)
 
     def handle_notification(self, notification):
         handler = getattr(self, '_NH_%s' % notification.name, Null)
@@ -953,7 +957,7 @@ class IncomingCallInitializer(object):
         notification_center.remove_observer(self, sender=notification.sender)
         answer = notification.data.answer
         self.question = None
-        show_notice('Got answer %s' % answer)
+        #show_notice('Got answer %s' % answer)
         if answer == 'a':
             if application.received_private_key:
                 self.question = Question("Please enter the pincode to decrypt the key...", 'ar', bold=True)
@@ -1663,6 +1667,7 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, sender=self)
         notification_center.add_observer(self, sender=ui)
         notification_center.add_observer(self, name='SIPSessionNewIncoming')
+        notification_center.add_observer(self, name='SIPSessionNewIncomingFromTransferFailed')
         notification_center.add_observer(self, name='SIPSessionNewOutgoing')
         notification_center.add_observer(self, name='RTPStreamDidChangeRTPParameters')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidSucceed')
@@ -2365,6 +2370,10 @@ class SIPSessionApplication(SIPApplication):
                 show_notice("%s %s encrypted message could not be read" % (datetime.now().replace(microsecond=0), identity))
                 message_session.encryption.stop()
 
+    def _NH_SIPSessionNewIncomingFromTransferFailed(self, notification):
+        session = notification.sender
+        show_notice('Incoming session with transfer from %s failed: %s' % (str(session.remote_identity.uri), notification.data))
+
     def _NH_SIPSessionNewIncoming(self, notification):
         session = notification.sender
         transfer_streams = [stream for stream in session.proposed_streams if stream.type == 'file-transfer' and stream.direction == 'recvonly']
@@ -2423,7 +2432,7 @@ class SIPSessionApplication(SIPApplication):
 
         self._update_prompt()
         if len(self.connected_sessions) > 1:
-            # this displays the conencted sessions
+            # this displays the connected sessions
             self._CH_sessions()
 
         if self.options.auto_hangup_interval is not None:
