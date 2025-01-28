@@ -1,4 +1,4 @@
-sipclients (5.4.1) UNRELEASED; urgency=medium
+sipclients (5.4.1) unstable; urgency=medium
 
   * Added more TLS certificate issuers
   * Reset status bar after call transfer fails
