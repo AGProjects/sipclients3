@@ -302,10 +302,10 @@ class MessageSession(object):
 
     @run_in_green_thread           
     def send_imdn_notification(self, imdn_id, imdn_timestamp, recipient, sender_identity, event):
-        show_notice('Send %s notification for %s' % (event, imdn_id))
+        show_notice('Send IMDN %s notification for message %s' % (event, imdn_id))
         if event == 'delivered':
             notification = DeliveryNotification('delivered')
-        elif event == 'displayed':
+        elif event in ('displayed', 'error'):
             notification = DisplayNotification(event)
         else:
             return
@@ -429,6 +429,7 @@ class MessageSession(object):
         imdn_id = None
         from_header = FromHeader.new(from_header)
         identity = '%s@%s' % (from_header.uri.user.decode(), from_header.uri.host.decode())
+        sender_identity = from_header
 
         if content_type == 'message/cpim':
             try:
@@ -482,8 +483,6 @@ class MessageSession(object):
                 if 'delivery' in cpim_imdn_events:
                     self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'delivered')
 
-                if 'display' in cpim_imdn_events:
-                    self.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
                 
 #        if content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
         if IgnoreMessage:
@@ -509,7 +508,7 @@ class MessageSession(object):
         elif payload.content_type.startswith('text/'):
             content.decode('utf8')
 
-        return (content_type, content, identity, self.msg_id, encrypted)
+        return (content_type, content, identity, self.msg_id, encrypted, imdn_id, cpim_imdn_events, imdn_timestamp, sender_identity)
 
     def _NH_SIPMessageDidSucceed(self, notification):
         self.notification_center.remove_observer(self, sender=notification.sender)
@@ -2230,12 +2229,16 @@ class SIPSessionApplication(SIPApplication):
 
         if content_type not in ('text/pgp-private-key', 'text/pgp-public-key'):
             message_session = self.message_session(identity, account=account, route=route)
-            parsed_payload = message_session.handle_incoming_message(data.from_header, content_type, data.body, call_id)
+            parsed_payload = None
+            try:
+                parsed_payload = message_session.handle_incoming_message(data.from_header, content_type, data.body, call_id)
+                (content_type, content, identity, msg_id, encrypted, imdn_id, cpim_imdn_events, imdn_timestamp, sender_identity) = parsed_payload            
+            except Exception as e:
+                pass
+                #show_notice('Parse exception from %s content_type %s, call_id %s: %s' % (data.from_header, content_type, call_id, str(e)))
 
-            if parsed_payload is None:
-                return
+            #show_notice("Parsed payload %s" % parsed_payload)
 
-            (content_type, content, identity, msg_id, encrypted) = parsed_payload            
             #if content_type not in ('text/pgp-private-key', 'text/pgp-public-key'):
             #    self.message_session_to = None
             #    message_session.end()
@@ -2243,6 +2246,9 @@ class SIPSessionApplication(SIPApplication):
             #        self.message_sessions.remove(message_session)
             #    except KeyError:
             #        pass
+            if parsed_payload is None:
+                return
+            
                     
         else:
             content = data.body
@@ -2349,18 +2355,26 @@ class SIPSessionApplication(SIPApplication):
                 else:
                     if content.startswith('-----BEGIN PGP MESSAGE-----') and content.endswith('-----END PGP MESSAGE-----') and not private_key:
                         show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, 'Received a PGP message for which we have no private key', msg_id))
+                        if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
+                             message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'error')
                     else:
                         try:
                             pgpMessage = pgpy.PGPMessage.from_blob(content.encode())
                             decrypted_message = private_key.decrypt(pgpMessage)
                         except (pgpy.errors.PGPDecryptionError, pgpy.errors.PGPError) as e:
                             show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, 'PGP decrypt error', msg_id))
+                            if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
+                                message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'error')
                             return
                         except ValueError as e:
                             show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+                            if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
+                                message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
                         else:
                             content = bytes(decrypted_message.message, 'latin1').decode()
                             show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+                            if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
+                                message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
 
             if not encrypted and message_session and message_session.encryption and message_session.encryption.active and content_type != IsComposingDocument.content_type:
                 show_notice("%s %s stopped the encryption" % (datetime.now().replace(microsecond=0), identity))
