@@ -3333,7 +3333,7 @@ class SIPSessionApplication(SIPApplication):
         account_manager = AccountManager()
 
         if not args or args[0] == 'list':
-            show_notice('Accounts available: %s' % ", ".join(account.id for account in account_manager.iter_accounts() if account != self.account and account.enabled))
+            show_notice('Accounts available: %s' % ", ".join(account.id for account in account_manager.iter_accounts() if account.enabled))
 
         elif args and args[0] == 'register':
             if not self.account.sip.register:
