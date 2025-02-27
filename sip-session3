@@ -3336,8 +3336,11 @@ class SIPSessionApplication(SIPApplication):
             show_notice('Accounts available: %s' % ", ".join(account.id for account in account_manager.iter_accounts() if account.enabled))
 
         elif args and args[0] == 'register':
-            if not self.account.sip.register:
-                self.registration_succeeded[self.account.id] = False
+            if isinstance(self.account, BonjourAccount):
+                show_notice('Bonjour account has no registrar')
+            else:
+                if not self.account.sip.register:
+                    self.registration_succeeded[self.account.id] = False
 
             self.account.sip.register = not self.account.sip.register
             self.account.save()
