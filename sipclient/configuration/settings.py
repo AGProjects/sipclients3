@@ -6,7 +6,7 @@ __all__ = ['SIPSimpleSettingsExtension']
 import os
 
 from sipsimple.configuration import Setting, SettingsGroup, SettingsObjectExtension
-from sipsimple.configuration.datatypes import Path
+from sipsimple.configuration.datatypes import Path, SampleRate
 from sipsimple.configuration.settings import AudioSettings, LogsSettings
 
 
@@ -15,7 +15,8 @@ from sipclient.configuration.datatypes import SoundFile, UserDataPath, HTTPURL
 
 class AudioSettingsExtension(AudioSettings):
     directory = Setting(type=UserDataPath, default=UserDataPath('history'))
-
+    sample_rate = Setting(type=SampleRate, default=32000)
+ 
 
 class LogsSettingsExtension(LogsSettings):
     directory = Setting(type=UserDataPath, default=UserDataPath('logs'))
