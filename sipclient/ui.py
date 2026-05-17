@@ -521,7 +521,7 @@ class UI(Thread, metaclass=Singleton):
             # and a space
             self._raw_write(' ')
             # calculate the cursor position
-            self.cursor_y = (text_len-1)/window_size.x + self.prompt_y # no need to add 1 since we had to subtract 1
+            self.cursor_y = (text_len-1)//window_size.x + self.prompt_y # no need to add 1 since we had to subtract 1
             self.cursor_x = (text_len-1)%window_size.x + 1
             # the new prompt will now be just under the question
             self.prompt_y += text_lines
@@ -551,9 +551,9 @@ class UI(Thread, metaclass=Singleton):
             self._raw_write(self.input.current_line)
             # move the cursor to it's correct position
             cursor_position = len(self.prompt) + self.input.cursor_position + 1
-            self.cursor_y = (cursor_position-1)/window_size.x + self.prompt_y # no need to add 1 since we had to subtract 1
+            self.cursor_y = (cursor_position-1)//window_size.x + self.prompt_y # no need to add 1 since we had to subtract 1
             self.cursor_x = (cursor_position-1)%window_size.x + 1
-            #self._raw_write('\x1b[%d;%dH' % (self.cursor_y, self.cursor_x))
+            self._raw_write('\x1b[%d;%dH' % (self.cursor_y, self.cursor_x))
 
     def _draw_status(self):
         status = self.status
