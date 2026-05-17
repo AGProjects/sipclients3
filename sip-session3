@@ -88,367 +88,41 @@ def show_notice(text, bold=True):
         ui.write(RichText(text, bold=bold))
 
 
+# SIP Call-ID resolver — same call_id format Sylk-Mobile's [ui] lines
+# use so a single grep through both metro.log and sip-session3's log
+# correlates the call end-to-end. Falls back through dialog_id →
+# _invitation → '?' so it works for both established and pre-INVITE
+# sessions.
+def _sip_call_id(session):
+    if session is None:
+        return '?'
+    try:
+        did = getattr(session, 'dialog_id', None)
+        if did is not None and getattr(did, 'call_id', None):
+            return did.call_id
+    except Exception:
+        pass
+    try:
+        inv = getattr(session, '_invitation', None)
+        if inv is not None and getattr(inv, 'call_id', None):
+            return inv.call_id
+    except Exception:
+        pass
+    return '?'
+
+
 # Utility classes
 #
 
-# ---------------------------------------------------------------------------
-# Sylk-flavoured ZRTP key exchange over SIP MESSAGE
-# ---------------------------------------------------------------------------
-#
-# This is NOT RFC 6189 ZRTP. It's the per-call X25519+HKDF DH ladder used by
-# sylk-mobile/app/components/CallZrtp.js, carried over SIP MESSAGE bodies
-# tagged with Content-Type: application/sylk-zrtp-negotiation. Both ends
-# derive identical AES-128-GCM keys for caller→callee / callee→caller plus a
-# 4-char + 4-emoji Short Authentication String (SAS) for voice verification.
-#
-# Pass 2 (this implementation): receive in-dialog MESSAGE on the SDK-side
-# new SIPSessionGotMessage event (see python3-sipsimple commit adding
-# Invitation.process_incoming_message), unwrap CPIM, run the 4-state ladder
-# (probe → accept → recv_ready → sender_ready), and LOG the derived keys +
-# SAS. The keys are NOT yet installed on the audio stream — that's Pass 3
-# (PJMEDIA AES-GCM transport adapter wrapping SRTP).
-#
-# Wire payloads are tiny JSON blobs:
-#   probe         { v, type:'probe',        call_id, ephem_pub_hex, suites }
-#   accept        { v, type:'accept',       call_id, ephem_pub_hex }
-#   recv_ready    { v, type:'recv_ready',   call_id }
-#   sender_ready  { v, type:'sender_ready', call_id }
-#
-# Callee path: RECV probe → derive → SEND accept → RECV recv_ready → SEND
-#              sender_ready → key-agreed
-# Caller path: SEND probe → RECV accept → derive → SEND recv_ready → RECV
-#              sender_ready → key-agreed
-# ---------------------------------------------------------------------------
+# Sylk-ZRTP-over-MESSAGE moved into the SDK. The full state machine,
+# X25519+HKDF derivation, AEAD install on streams, and the X-Sylk-ZRTP
+# capability header are now handled inside sipsimple.streams.rtp.sylk_zrtp
+# and wired into Session automatically when account.rtp.encryption is
+# opportunistic or zrtp. Applications observe the new
+# SIPSessionSylkZRTPStateChanged notification if they want to surface
+# the SAS or a "secure" pill — see _NH_SIPSessionSylkZRTPStateChanged
+# in SIPSessionApplication below for an example.
 
-try:
-    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    from cryptography.hazmat.primitives import hashes
-    _ZRTP_CRYPTO_AVAILABLE = True
-except ImportError:
-    _ZRTP_CRYPTO_AVAILABLE = False
-
-
-ZRTP_CONTENT_TYPE = 'application/sylk-zrtp-negotiation'
-ZRTP_VERSION = 1
-
-# 32-symbol SAS alphabets, byte-for-byte identical to CallZrtp.js so both
-# endpoints display the same 4-char + 4-emoji string.
-_SAS_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'  # RFC 4648 base32
-_SAS_EMOJIS = [
-    '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼',
-    '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵', '🦄',
-    '🐔', '🐧', '🦅', '🦉', '🐺', '🐴', '🦓', '🦒',
-    '🐘', '🦏', '🐊', '🐢', '🐳', '🦈', '🐙', '🦋',
-]
-
-
-def _zrtp_hkdf(ikm, salt, info, length):
-    return HKDF(algorithm=hashes.SHA256(), length=length, salt=salt,
-                info=info.encode('utf-8')).derive(ikm)
-
-
-class ZrtpSession(object):
-    """One ZRTP handshake bound to a single SIP Session.
-
-    Holds the X25519 ephemeral keypair, drives the 4-state ladder, derives
-    HKDF outputs and the SAS, and logs every step via show_notice() so the
-    user can correlate against Sylk Mobile's metro.log [ZRTP] lines.
-    """
-
-    def __init__(self, session, role, application):
-        self.session = session
-        self.role = role                       # 'caller' | 'callee'
-        self.application = application
-        # SIP Call-ID: both ends agree on this; we put it in every payload
-        # so a peer dispatching cross-account ZRTP messages can filter forks.
-        # Session exposes the Call-ID via .dialog_id.call_id (the DialogID
-        # tuple is (call_id, local_tag, remote_tag)); fall back to the
-        # underlying Invitation if dialog_id isn't populated yet.
-        dialog_id = getattr(session, 'dialog_id', None)
-        if dialog_id is not None:
-            self.call_id = dialog_id.call_id
-        else:
-            inv = getattr(session, '_invitation', None)
-            self.call_id = getattr(inv, 'call_id', None) if inv is not None else None
-        self.ephem_priv = X25519PrivateKey.generate()
-        self.ephem_pub_bytes = self.ephem_priv.public_key().public_bytes(
-            encoding=Encoding.Raw, format=PublicFormat.Raw)
-        self.peer_ephem_pub = None
-        self.shared_secret = None
-        self.derived = None
-        self.sas_chars = None
-        self.sas_emojis = None
-        self.state = 'idle'                    # idle | probing | key-agreed | failed
-        self._log('created — local ephem pub hex prefix=%s…' %
-                  self.ephem_pub_bytes.hex()[:16])
-
-    # ---- outbound -------------------------------------------------------
-
-    def start_probe(self):
-        """Caller-side kickoff. Idempotent."""
-        if self.state != 'idle':
-            self._log('start_probe ignored — state=%s' % self.state)
-            return
-        self.state = 'probing'
-        payload = {
-            'v': ZRTP_VERSION,
-            'type': 'probe',
-            'call_id': self.call_id,
-            'ephem_pub_hex': self.ephem_pub_bytes.hex(),
-            'suites': ['AES-128-GCM'],
-        }
-        self._log('SEND probe ephem_pub=%s…' % payload['ephem_pub_hex'][:16])
-        self._send(payload, label='probe')
-
-    # ---- inbound dispatch ----------------------------------------------
-
-    def handle_incoming(self, payload):
-        """Drive the state machine from a peer-sent JSON payload."""
-        if not isinstance(payload, dict):
-            self._log('payload not a dict — ignoring')
-            return
-        v = payload.get('v')
-        if v != ZRTP_VERSION:
-            self._log('version mismatch v=%r want=%d' % (v, ZRTP_VERSION))
-            return
-        # Cross-account/account-message forks may arrive on other devices;
-        # filter by call_id so we never act on someone else's handshake.
-        pcid = payload.get('call_id')
-        if pcid and pcid != self.call_id:
-            self._log('call_id mismatch payload=%s ours=%s — ignoring' % (pcid, self.call_id))
-            return
-        ty = payload.get('type')
-        self._log('RECV %s' % ty)
-        if ty == 'probe':
-            return self._on_probe(payload)
-        if ty == 'accept':
-            return self._on_accept(payload)
-        if ty == 'recv_ready':
-            return self._on_recv_ready(payload)
-        if ty == 'sender_ready':
-            return self._on_sender_ready(payload)
-        self._log('unknown payload type %r — ignoring' % ty)
-
-    def _on_probe(self, payload):
-        if not payload.get('ephem_pub_hex'):
-            self._log('probe missing ephem_pub_hex')
-            return
-        self.peer_ephem_pub = bytes.fromhex(payload['ephem_pub_hex'])
-        self._derive()
-        reply = {
-            'v': ZRTP_VERSION,
-            'type': 'accept',
-            'call_id': self.call_id,
-            'ephem_pub_hex': self.ephem_pub_bytes.hex(),
-        }
-        self._log('SEND accept (callee)')
-        self._send(reply, label='accept')
-
-    def _on_accept(self, payload):
-        if not payload.get('ephem_pub_hex'):
-            self._log('accept missing ephem_pub_hex')
-            return
-        self.peer_ephem_pub = bytes.fromhex(payload['ephem_pub_hex'])
-        self._derive()
-        reply = {'v': ZRTP_VERSION, 'type': 'recv_ready', 'call_id': self.call_id}
-        self._log('SEND recv_ready (caller)')
-        self._send(reply, label='recv_ready')
-
-    def _on_recv_ready(self, payload):
-        # Peer signaled it has installed its decryptor. We can now safely
-        # install our own AEAD keys (the install happens inside
-        # _announce_complete) — Pass 3 lifts this from "ack only" to
-        # actually applying AES-128-GCM on the stream.
-        reply = {'v': ZRTP_VERSION, 'type': 'sender_ready', 'call_id': self.call_id}
-        self._log('SEND sender_ready')
-        self._send(reply, label='sender_ready')
-        self.state = 'key-agreed'
-        self._log('state -> key-agreed')
-        self._announce_complete()
-
-    def _on_sender_ready(self, payload):
-        self.state = 'key-agreed'
-        self._log('state -> key-agreed')
-        self._announce_complete()
-
-    # ---- crypto ---------------------------------------------------------
-
-    def _derive(self):
-        peer_pub = X25519PublicKey.from_public_bytes(self.peer_ephem_pub)
-        self.shared_secret = self.ephem_priv.exchange(peer_pub)
-        self._log('ECDH shared secret hex: %s' % self.shared_secret.hex())
-        salt = b'\x00' * 32
-        # Direction-tagged HKDF outputs — same labels as CallZrtp.js so both
-        # ends derive byte-for-byte identical keys regardless of who is the
-        # caller / callee.
-        k_c2e = _zrtp_hkdf(self.shared_secret, salt, 'sylk-e2ee/v1/audio-caller-to-callee', 16)
-        k_e2c = _zrtp_hkdf(self.shared_secret, salt, 'sylk-e2ee/v1/audio-callee-to-caller', 16)
-        s_c2e = _zrtp_hkdf(self.shared_secret, salt, 'sylk-e2ee/v1/audio-caller-to-callee-salt', 8)
-        s_e2c = _zrtp_hkdf(self.shared_secret, salt, 'sylk-e2ee/v1/audio-callee-to-caller-salt', 8)
-        sas_bytes = _zrtp_hkdf(self.shared_secret, salt, 'sylk-zrtp/v1/sas', 8)
-        self.derived = {
-            'audio_c2e_key':  k_c2e.hex(),
-            'audio_e2c_key':  k_e2c.hex(),
-            'audio_c2e_salt': s_c2e.hex(),
-            'audio_e2c_salt': s_e2c.hex(),
-        }
-        self.sas_chars  = ''.join(_SAS_CHARS[b & 0x1F] for b in sas_bytes[:4])
-        self.sas_emojis = ''.join(_SAS_EMOJIS[b & 0x1F] for b in sas_bytes[4:8])
-        self._log('HKDF caller→callee key  = %s' % k_c2e.hex())
-        self._log('HKDF callee→caller key  = %s' % k_e2c.hex())
-        self._log('HKDF caller→callee salt = %s' % s_c2e.hex())
-        self._log('HKDF callee→caller salt = %s' % s_e2c.hex())
-        self._log('SAS chars: %s   emojis: %s' % (self.sas_chars, self.sas_emojis))
-
-    def _announce_complete(self):
-        # User-visible summary identical in shape to sylk-mobile's
-        # "[ZRTP] handshake completed with…" applog line, so support can
-        # diff one against the other.
-        uri = self.session.remote_identity.uri
-        user = uri.user.decode() if isinstance(uri.user, (bytes, bytearray)) else uri.user
-        host = uri.host.decode() if isinstance(uri.host, (bytes, bytearray)) else uri.host
-        show_notice('[ZRTP] handshake completed with %s@%s role=%s sas=%s %s' %
-                    (user, host, self.role, self.sas_chars or '?', self.sas_emojis or '?'))
-        # Pass 3: install the HKDF-derived keys on the audio stream's
-        # underlying RTPTransport. From now on outgoing RTP payload is
-        # AES-128-GCM encrypted on this side, and incoming RTP payload
-        # is decrypted. Direction-tagged keys:
-        #   caller sends with caller→callee key, receives with callee→caller.
-        #   callee mirrored.
-        self._install_aead_keys_on_stream()
-
-    def _install_aead_keys_on_stream(self):
-        if not self.derived:
-            self._log('install_aead: no derived keys yet — skipping')
-            return
-        # Direction tagging: caller sends c2e (caller→callee), receives
-        # e2c. Callee mirrored. Same keys are reused for both audio and
-        # video streams — the wire format's [v|keyId] header lets the peer
-        # disambiguate, and per-direction counters never overlap because
-        # each stream has its own RTPTransport (separate AEAD adapter,
-        # separate counter).
-        if self.role == 'caller':
-            send_key  = bytes.fromhex(self.derived['audio_c2e_key'])
-            send_salt = bytes.fromhex(self.derived['audio_c2e_salt'])
-            recv_key  = bytes.fromhex(self.derived['audio_e2c_key'])
-            recv_salt = bytes.fromhex(self.derived['audio_e2c_salt'])
-        else:
-            send_key  = bytes.fromhex(self.derived['audio_e2c_key'])
-            send_salt = bytes.fromhex(self.derived['audio_e2c_salt'])
-            recv_key  = bytes.fromhex(self.derived['audio_c2e_key'])
-            recv_salt = bytes.fromhex(self.derived['audio_c2e_salt'])
-
-        for stream in (self.session.streams or []):
-            if stream.type not in ('audio', 'video'):
-                continue
-            # H.264 video can't be safely E2E-encrypted with our fixed-
-            # prefix AEAD because the H.264 RTP packetizer uses STAP-A
-            # (multi-NAL aggregation) — encrypting past the first NAL
-            # header corrupts the size fields and breaks reassembly on
-            # the receiver. Sylk Mobile's CallZrtp.js skips its video
-            # install for H264 too, so leaving the python3-sipsimple
-            # video stream in passthrough keeps the two sides symmetric
-            # and avoids "one side encrypts, the other can't decrypt"
-            # asymmetry. Audio E2EE is unaffected.
-            codec_upper = (stream.codec or '').upper()
-            if stream.type == 'video' and codec_upper == 'H264':
-                self._log('skipping AES-GCM install on video stream — codec=H264 (STAP-A unsupported)')
-                continue
-            try:
-                vp = self._video_prefix_for_stream(stream)
-                stream.set_aead_keys(send_key, send_salt, recv_key, recv_salt,
-                                     key_id=1, video_prefix=vp)
-                self._log('AES-GCM installed on %s stream — codec=%s prefix=%d '
-                          'send key prefix=%s recv key prefix=%s'
-                          % (stream.type, stream.codec or '?', vp,
-                             send_key.hex()[:8], recv_key.hex()[:8]))
-            except Exception as e:
-                self._log('install_aead %s FAILED: %s' % (stream.type, e))
-
-    @staticmethod
-    def _video_prefix_for_stream(stream):
-        """Bytes left UNENCRYPTED at the start of each RTP payload.
-
-        Must match the value Sylk Mobile's unencryptedVideoPrefixForCodec
-        uses for the same negotiated codec, or every frame fails the GCM
-        tag check and falls through to permissive passthrough.
-
-        Audio = 0. Video defaults are codec-dependent because RTP
-        packetizers read codec-specific metadata from the payload's
-        opening bytes (VP8 descriptor, VP9 descriptor, H264 FU-A header,
-        AV1 OBU header). Encrypting those would break reassembly on the
-        receiver.
-        """
-        if stream.type != 'video':
-            return 0
-        codec = (stream.codec or '').upper()
-        if codec in ('VP8', 'VP9'):
-            return 3
-        if codec == 'H264':
-            return 2
-        if codec == 'AV1':
-            return 1
-        # Conservative default for unknown video codecs — mirrors the
-        # JS-side fallback in CallZrtp.js.unencryptedVideoPrefixForCodec.
-        return 3
-
-    # ---- transport ------------------------------------------------------
-
-    def _send(self, payload, label='?'):
-        """Ship a ZRTP envelope to the peer via in-dialog SIP MESSAGE.
-
-        Uses the SDK's Session.send_message — under the hood
-        pjsip_dlg_create_request fills Request-URI from the peer's recorded
-        Contact, Route from the dialog's reversed Record-Route stack, and
-        From/To/Call-ID/CSeq from the dialog state. So this lands at
-        exactly the device on the other end of the call, with no fork to
-        the peer's other registrations.
-
-        We mirror sylk-mobile's wire format: CPIM envelope wrapping the
-        JSON, outer Content-Type message/cpim, inner Content-Type
-        application/sylk-zrtp-negotiation.
-        """
-        try:
-            body = json.dumps(payload).encode('utf-8')
-            session = self.session
-            account = session.account
-            from_uri = account.uri
-            to_uri = session.remote_identity.uri
-            cpim_from = ChatIdentity(from_uri, account.display_name)
-            cpim_to = ChatIdentity(to_uri, session.remote_identity.display_name)
-            # sylk-server routes incoming in-dialog MESSAGEs to the Janus
-            # session-event stream of the active call only when the CPIM
-            # envelope carries an imdn.Message-ID (this is also what every
-            # outbound message sylk-mobile sends includes, see the probe
-            # trace). Without it the SIP MESSAGE still gets 200 OK from
-            # the peer's UA but no 'incomingMessage' event ever fires in
-            # CallZrtp.js — which is exactly the silence we hit on the
-            # first attempt. Add the imdn namespace + a fresh UUID per
-            # outgoing envelope.
-            imdn_ns = CPIMNamespace('urn:ietf:params:imdn', prefix='imdn')
-            imdn_headers = [
-                CPIMHeader('Message-ID', imdn_ns, str(uuid.uuid4())),
-            ]
-            cpim_payload = CPIMPayload(body,
-                                       content_type=ZRTP_CONTENT_TYPE,
-                                       charset='utf-8',
-                                       sender=cpim_from,
-                                       recipients=[cpim_to],
-                                       timestamp=str(ISOTimestamp.now()),
-                                       additional_headers=imdn_headers)
-            content, content_type = cpim_payload.encode()
-            content_type_str = content_type.decode() if isinstance(content_type, (bytes, bytearray)) else content_type
-            session.send_message(content_type_str, content)
-            self._log('TX %s ok (in-dialog, %d B)' % (label, len(body)))
-        except Exception as e:
-            self._log('TX %s FAILED: %s' % (label, e))
-
-    # ---- logging --------------------------------------------------------
-
-    def _log(self, msg):
-        show_notice('[ZRTP %s %s] %s' % (self.role, self.call_id, msg))
 
 
 class BonjourNeighbour(object):
@@ -1042,7 +716,12 @@ class OutgoingCallInitializer(object):
         else:
             key_negotiation = 'disabled'
         show_notice('RTP encryption key_negotiation: %s' % key_negotiation)
-        session.connect(ToHeader(self.target), routes=notification.data.result, streams=self.streams)
+        # X-Sylk-ZRTP capability header is added automatically by the
+        # SDK (Session.connect) when account.rtp.encryption is
+        # opportunistic or zrtp. The application no longer needs to
+        # touch extra_headers for that.
+        session.connect(ToHeader(self.target), routes=notification.data.result,
+                        streams=self.streams)
         application = SIPSessionApplication()
         application.outgoing_session = session
 
@@ -1983,11 +1662,6 @@ class SIPSessionApplication(SIPApplication):
         self.last_failure_reason = None
         self.enable_playback = False
         self.auto_record = False
-        # Sylk-flavoured ZRTP-over-SIP-MESSAGE handshakes, keyed by id(session).
-        # Populated lazily when the first ZRTP envelope is seen for a session
-        # (inbound — callee role) or when start_zrtp_probe() is invoked from
-        # _NH_SIPSessionDidStart (outbound — caller role, gated on options).
-        self.zrtp_sessions = {}
 
     def handle_notification(self, notification):
         alive_file = os.path.join(config_directory, 'last_notification')
@@ -2830,18 +2504,6 @@ class SIPSessionApplication(SIPApplication):
                 timer = reactor.callLater(self.options.auto_hangup_interval, session.end)
                 self.hangup_timers[id(session)] = timer
 
-        # Pass-2 ZRTP: probe is fired LATER, from
-        # _NH_RTPStreamDidEnableEncryption, once SDES SRTP is active on the
-        # audio stream. Firing the probe here (right at SIPSessionDidStart)
-        # was racing sylk-server's per-session state machine on the callee
-        # side: when our peer is a sylk-mobile client, sylk-server keeps
-        # the server-side session in 'accepted' until first RTP arrives,
-        # and its 'session-message' WebSocket handler rejects the callee's
-        # `accept` reply with "Invalid state ...: accepted for sending
-        # messages". By the time SDES is active and audio is flowing, the
-        # callee has been receiving our RTP packets so sylk-server has
-        # moved its session to 'established' and accepts the response.
-
     def _NH_SIPSessionWillEnd(self, notification):
         notification_center = NotificationCenter()
         session = notification.sender
@@ -2851,85 +2513,56 @@ class SIPSessionApplication(SIPApplication):
                 timer.cancel()
             del self.hangup_timers[id(session)]
 
-    # ---- ZRTP-over-SIP-MESSAGE -----------------------------------------
+    # ---- Sylk-ZRTP-over-MESSAGE observer ------------------------------
     #
-    # The python3-sipsimple SDK posts SIPSessionGotMessage for any in-dialog
-    # MESSAGE on an established Session (out-of-dialog MESSAGE still goes to
-    # SIPApplicationGotMessage / SIPEngineGotMessage). The Sylk Mobile
-    # handshake arrives here when the peer uses the 'call' transport in
-    # CallZrtp.js (default in current production); when it uses 'account'
-    # transport the same payload would arrive via SIPEngineGotMessage —
-    # we deliberately do NOT handle that here, per Adi's requirement that
-    # this code path stays scoped to in-dialog only.
+    # The full handshake state machine, X25519+HKDF derivation, AEAD key
+    # installation on streams, and the X-Sylk-ZRTP capability header now
+    # live inside sipsimple.streams.rtp.sylk_zrtp and are driven by the
+    # SDK whenever the local account allows it AND the remote peer
+    # signaled support. Apps only observe and surface the SAS / state.
 
-    def _NH_SIPSessionGotMessage(self, notification):
-        session = notification.sender
+    def _NH_SIPSessionSylkZRTPStateChanged(self, notification):
         data = notification.data
-        ct = data.headers.get('Content-Type')
-        if ct is None:
-            return
-        ct_type = ct.content_type.lower() if hasattr(ct, 'content_type') else str(ct).lower()
-
-        # The wire body may be a bare ZRTP envelope (no CPIM wrap) or a
-        # CPIM-wrapped one (which is what sylk-mobile actually sends — see
-        # the trace). Unwrap CPIM when present.
-        if ct_type == 'message/cpim':
-            try:
-                cpim = CPIMPayload.decode(data.body)
-            except CPIMParserError as e:
-                show_notice('[ZRTP] CPIM parse error: %s' % e)
-                return
-            inner_ct = (cpim.content_type or '').lower()
-            inner_body = cpim.content
-        else:
-            inner_ct = ct_type
-            inner_body = data.body
-
-        if inner_ct != ZRTP_CONTENT_TYPE:
-            # Some other in-dialog MESSAGE — we don't claim it. Quietly
-            # ignore so future content-types can grow their own handlers.
-            return
-
-        if not _ZRTP_CRYPTO_AVAILABLE:
-            show_notice('[ZRTP] cryptography package missing — cannot run handshake')
-            return
-
-        try:
-            payload = json.loads(inner_body.decode('utf-8') if isinstance(inner_body, (bytes, bytearray)) else inner_body)
-        except (ValueError, UnicodeDecodeError) as e:
-            show_notice('[ZRTP] JSON parse error: %s' % e)
-            return
-
-        zs = self.zrtp_sessions.get(id(session))
-        if zs is None:
-            # First envelope for this session — peer initiated, so we're
-            # the callee.
-            zs = ZrtpSession(session, role='callee', application=self)
-            self.zrtp_sessions[id(session)] = zs
-        zs.handle_incoming(payload)
-
-    def start_zrtp_probe(self, session):
-        """Initiate the caller-side ZRTP handshake for a connected session.
-
-        Idempotent — a second call for the same session is a no-op. Safe to
-        call from _NH_SIPSessionDidStart for outgoing calls when the user
-        has enabled zRTP at the command line (--zrtp).
-        """
-        if not _ZRTP_CRYPTO_AVAILABLE:
-            show_notice('[ZRTP] cryptography package missing — skipping outbound probe')
-            return None
-        zs = self.zrtp_sessions.get(id(session))
-        if zs is None:
-            zs = ZrtpSession(session, role='caller', application=self)
-            self.zrtp_sessions[id(session)] = zs
-        zs.start_probe()
-        return zs
+        state = getattr(data, 'state', None)
+        # Resolve SIP Call-ID for log filtering. Same format the Sylk
+        # Mobile [ui] lines use so a single grep correlates both sides
+        # of a call.
+        session = notification.sender
+        cid = _sip_call_id(session)
+        prefix = '[zrtp] call_id=%s' % cid
+        if state == 'key-agreed':
+            sas = getattr(data, 'sas', None)
+            if sas:
+                show_notice('%s key agreed — SAS: %s' % (prefix, sas))
+            else:
+                show_notice('%s key agreed' % prefix)
+        elif state == 'key-active':
+            installed = getattr(data, 'installed_streams', None) or []
+            failed = getattr(data, 'failed_streams', None) or []
+            if installed:
+                install_desc = ', '.join('%s(%s,prefix=%d)' % (typ, codec, vp)
+                                          for (typ, codec, vp) in installed)
+                show_notice('%s media now end-to-end encrypted (AES-128-GCM) — installed on: %s'
+                            % (prefix, install_desc))
+            else:
+                show_notice('%s media now end-to-end encrypted (AES-128-GCM)' % prefix)
+            if failed:
+                fail_desc = ', '.join('%s(%s,%s)' % (typ, codec, reason)
+                                       for (typ, codec, reason) in failed)
+                show_notice('%s note — these streams stayed plain: %s' % (prefix, fail_desc))
+        elif state == 'failed':
+            reason = getattr(data, 'error', None) or getattr(data, 'reason', '')
+            failed = getattr(data, 'failed_streams', None) or []
+            show_notice('%s handshake failed%s' % (prefix, (': ' + reason) if reason else ''))
+            for typ, codec, why in failed:
+                show_notice('%s    %s stream (codec=%s) — %s' % (prefix, typ, codec, why))
+        elif state == 'probing':
+            role = getattr(data, 'role', '?')
+            show_notice('%s handshake started (role=%s)' % (prefix, role))
 
     def _NH_SIPSessionDidEnd(self, notification):
         notification_center = NotificationCenter()
         session = notification.sender
-        # Drop any ZRTP state associated with this session.
-        self.zrtp_sessions.pop(id(session), None)
         notification_center.discard_observer(self, sender=session)
         for stream in session.streams or session.proposed_streams or []:
             notification_center.discard_observer(self, sender=stream)
@@ -3083,30 +2716,23 @@ class SIPSessionApplication(SIPApplication):
 
     def _NH_RTPStreamDidEnableEncryption(self, notification):
         stream = notification.sender
-        show_notice("%s encryption activated using %s (%s)" % (stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode() if isinstance(stream.encryption.cipher, bytes) else stream.encryption.cipher))
+        # Resolve the SIP Call-ID via the stream's session so audio /
+        # video encryption activation lines are filterable alongside
+        # the [zrtp] / [ui] lines on the Sylk Mobile side.
+        cid = _sip_call_id(getattr(stream, 'session', None))
+        show_notice("call_id=%s %s encryption activated using %s (%s)" % (cid, stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode() if isinstance(stream.encryption.cipher, bytes) else stream.encryption.cipher))
 
         if stream.encryption.type == 'ZRTP' and stream.type == 'audio':
             peer_name = stream.encryption.zrtp.peer_name if stream.encryption.zrtp.peer_name else None
             sas = stream.encryption.zrtp.sas.decode() if isinstance(stream.encryption.zrtp.sas, bytes) else stream.encryption.zrtp.sas
-            show_notice("ZRTP secret is %s" % sas)
-            show_notice("ZRTP peer name is %s, use /zrtp_name command to change it" % (peer_name or 'not set'))
-            show_notice("ZRTP peer is %s, use /zrtp_verified command to toggle it" % ('verified' if stream.encryption.zrtp.verified else 'not verified'))
+            show_notice("call_id=%s ZRTP secret is %s" % (cid, sas))
+            show_notice("call_id=%s ZRTP peer name is %s, use /zrtp_name command to change it" % (cid, (peer_name or 'not set')))
+            show_notice("call_id=%s ZRTP peer is %s, use /zrtp_verified command to toggle it" % (cid, ('verified' if stream.encryption.zrtp.verified else 'not verified')))
 
-        # Pass-2 ZRTP: now that SDES is active on the audio stream, media
-        # is actually flowing — the callee's sylk-server session has
-        # moved past 'accepted' and will accept our `accept`/`recv_ready`
-        # /`sender_ready` in-dialog replies. Kick off the probe here
-        # rather than at SIPSessionDidStart for the reason documented
-        # there. Only outgoing calls initiate; the callee side waits for
-        # the probe in _NH_SIPSessionGotMessage. start_zrtp_probe is
-        # idempotent so a hold/unhold-driven re-enable can't double-fire.
-        session = getattr(stream, 'session', None)
-        if (getattr(self.options, 'zrtp', False)
-                and stream.type == 'audio'
-                and stream.encryption.type == 'SRTP/SDES'
-                and session is not None
-                and session.direction == 'outgoing'):
-            self.start_zrtp_probe(session)
+        # Sylk-ZRTP-over-MESSAGE is now driven entirely by the SDK based on
+        # the account's rtp.encryption setting and the X-Sylk-ZRTP capability
+        # exchange. State transitions are surfaced via
+        # SIPSessionSylkZRTPStateChanged (see the observer above).
 
         self._update_prompt()
 
@@ -4316,7 +3942,6 @@ if __name__ == '__main__':
     parser.add_option('--auto-answer', action='callback', callback=parse_handle_call_option, callback_args=('auto_answer_interval',), help='Interval after which to answer an incoming session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (accept the session as soon as it starts ringing).', metavar='[INTERVAL]')
     parser.set_default('auto_hangup_interval', None)
     parser.add_option('--auto-hangup', action='callback', callback=parse_handle_call_option, callback_args=('auto_hangup_interval',), help='Interval after which to hang up an established session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (hangup the session as soon as it connects).', metavar='[INTERVAL]')
-    parser.add_option('--zrtp', action='store_true', dest='zrtp', default=False, help='Enable Sylk-flavoured ZRTP-over-SIP-MESSAGE key escalation on top of SDES (X25519+HKDF, AES-128-GCM suite). Pass 2 of 3: derives keys and SAS, logs them; media is NOT yet AES-GCM encrypted (that lands in Pass 3, the PJMEDIA adapter).')
     options, args = parser.parse_args()
 
     target = args[0] if args else None
