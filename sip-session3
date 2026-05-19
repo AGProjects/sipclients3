@@ -11,6 +11,19 @@ import urllib.request, urllib.parse, urllib.error
 import random
 import requests
 import uuid
+import warnings
+
+# Silence pgpy's noisy CryptographyDeprecationWarning chatter at import time
+# (IDEA / TripleDES / CAST5 / Blowfish moved to cryptography.hazmat.decrepit).
+# Must happen before "import pgpy" because the warnings fire from pgpy/constants.py
+# during pgpy's own import.
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
+except ImportError:
+    pass
+warnings.filterwarnings('ignore', module=r'pgpy(\..*)?')
+
 import pgpy
 import subprocess
 import zlib
@@ -167,6 +180,7 @@ class QueuedMessage(object):
         self.content_type = content_type
         self.encrypted = False
         self.call_id = None
+        self.imdn_id = None  # CPIM Message-ID assigned for IMDN correlation
 
 
 class OTRInternalMessage(QueuedMessage):
@@ -320,7 +334,7 @@ class MessageSession(object):
 
         return self.msg_id 
 
-    def send_message(self, message, content_type='text/plain'):
+    def send_message(self, message, content_type='text/plain', imdn_id=None):
         if not self.routes:
             self.start()
 
@@ -328,6 +342,7 @@ class MessageSession(object):
 
         if not isinstance(message, OTRInternalMessage):
             messageObject = QueuedMessage(self.msg_id , message, content_type)
+            messageObject.imdn_id = imdn_id
             self.message_queue.put(messageObject)
         else:
             self.message_queue.put(message)
@@ -336,7 +351,7 @@ class MessageSession(object):
 
     @run_in_green_thread           
     def send_imdn_notification(self, imdn_id, imdn_timestamp, recipient, sender_identity, event):
-        show_notice('Send IMDN %s notification for message %s' % (event, imdn_id))
+        #show_notice('Send IMDN %s notification for message %s' % (event, imdn_id))
         if event == 'delivered':
             notification = DeliveryNotification('delivered')
         elif event in ('displayed', 'error'):
@@ -393,14 +408,64 @@ class MessageSession(object):
 
         if message.timestamp is None:
             message.timestamp = ISOTimestamp.now()
- 
+
+        # Optional PGP envelope (matching Blink): encrypt the payload with
+        # the remote party's public key, double-encrypted to ourselves when
+        # possible so we can re-read our own outgoing messages later. We
+        # skip OTR-internal traffic, control-plane content-types, and any
+        # message that is already a PGP key.
+        pgp_encrypted = False
+        if (not isinstance(message, OTRInternalMessage)
+                and not self.encryption.active
+                and message.content_type not in (
+                    IsComposingDocument.content_type,
+                    IMDNDocument.content_type,
+                    'text/pgp-public-key',
+                    'text/pgp-private-key',
+                    'application/sylk-api-pgp-key-lookup',
+                    'application/sylk-file-transfer',
+                )
+                and getattr(self.account.sms, 'enable_pgp', True)):
+            try:
+                application = SIPSessionApplication()
+                peer_key = application.get_public_key(self.remote_uri)
+            except Exception:
+                peer_key = None
+            if peer_key is not None:
+                try:
+                    from pgpy.constants import SymmetricKeyAlgorithm
+                    cipher = SymmetricKeyAlgorithm.AES256
+                    sessionkey = cipher.gen_key()
+                    plaintext = message.content
+                    if isinstance(plaintext, bytes):
+                        try:
+                            plaintext = plaintext.decode('utf-8')
+                        except UnicodeDecodeError:
+                            plaintext = plaintext.decode('utf-8', errors='replace')
+                    pgp_message = pgpy.PGPMessage.new(plaintext)
+                    enc = peer_key.encrypt(pgp_message, cipher=cipher, sessionkey=sessionkey)
+                    own_key = None
+                    try:
+                        own_key = application.get_public_key(str(self.account.id))
+                    except Exception:
+                        own_key = None
+                    if own_key is not None:
+                        enc = own_key.encrypt(enc, cipher=cipher, sessionkey=sessionkey)
+                    del sessionkey
+                    message.content = str(enc).encode()
+                    pgp_encrypted = True
+                except Exception as e:
+                    show_notice('PGP encryption failed for outgoing message, sending in clear text: %s' % str(e))
+
         additional_cpim_headers = []
         additional_sip_headers = []
 
         if self.account.sms.use_cpim:
             if self.account.sms.enable_imdn and message.content_type != IsComposingDocument.content_type:
                 ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
-                additional_cpim_headers = [CPIMHeader('Message-ID', ns, str(uuid.uuid4()))]
+                imdn_id = getattr(message, 'imdn_id', None) or str(uuid.uuid4())
+                message.imdn_id = imdn_id
+                additional_cpim_headers = [CPIMHeader('Message-ID', ns, imdn_id)]
 
                 if message.content_type != IsComposingDocument.content_type:
                     # request IMDN
@@ -500,10 +565,18 @@ class MessageSession(object):
                     imdn_message_id = document.message_id.value
                     imdn_status = document.notification.status.__str__()
                     ui = UI()
-                    msg = "Message %s was %s" % (imdn_message_id, imdn_status)
-                    ui.status = msg
-                    reactor.callLater(2, setattr, ui, 'status', None)
-                    show_notice(msg)
+                    # Inline tick: ✓ single check for delivered,
+                    # ✓✓ double check for displayed/read. Anything
+                    # else (error/failed) shows an exclamation mark.
+                    if imdn_status == 'delivered':
+                        tick = '✓'
+                    elif imdn_status == 'displayed':
+                        tick = '✓✓'
+                    elif imdn_status in ('failed', 'error'):
+                        tick = '!'
+                    else:
+                        tick = imdn_status
+                    ui.set_tick(imdn_message_id, tick)
                     return
         else:
             payload = SimplePayload.decode(data, content_type)
@@ -1643,6 +1716,8 @@ class SIPSessionApplication(SIPApplication):
         self.received_private_key = None
         self.private_keys = {}
         self.public_keys = {}
+        self.question = None
+        self.pending_key_generate_account = None
 
         self.ip_address_monitor = IPAddressMonitor()
         self.logger = None
@@ -2019,8 +2094,14 @@ class SIPSessionApplication(SIPApplication):
             account.sms.public_key_checksum = hashlib.sha1(public_key.encode()).hexdigest()
             account.save()
 
+            # drop cached copies so the new key is picked up
+            self.private_keys.pop(account.id, None)
+            self.public_keys.pop(str(account.id), None)
+            return True
+
         except Exception as e:
             show_notice("Import private key failed: %s" % str(e))
+            return False
             
     def get_public_key(self, uri):
         public_key = None
@@ -2028,7 +2109,7 @@ class SIPSessionApplication(SIPApplication):
             public_key = self.public_keys[uri]
         except KeyError:
             public_key_path = "%s/%s.pubkey" % (self.keys_path, uri)
-         
+
             if os.path.exists(public_key_path):
                 try:
                     public_key, _ = pgpy.PGPKey.from_file(public_key_path)
@@ -2037,9 +2118,33 @@ class SIPSessionApplication(SIPApplication):
                 else:
                     self.public_keys[uri] = public_key
                     show_notice('PGP public key imported from %s' % public_key_path)
-        
+
         return public_key
-            
+
+    def _lookup_public_key(self, target_uri):
+        """Ask the SIP server for the PGP public key associated with target_uri.
+
+        Uses the application/sylk-api-pgp-key-lookup content-type that the Sylk
+        server understands (same as Blink). The server replies with a separate
+        text/pgp-public-key MESSAGE, which the existing inbound handler routes
+        to either storage (peer key) or a notice (own-account key)."""
+        if isinstance(self.account, BonjourAccount):
+            return
+        if not target_uri or '@' not in target_uri:
+            return
+        try:
+            message_session = self.message_session(target_uri)
+        except Exception as e:
+            show_notice('Public key lookup for %s failed: %s' % (target_uri, e))
+            return
+        if message_session is None:
+            return
+        try:
+            message_session.send_message('Public key lookup',
+                                         content_type='application/sylk-api-pgp-key-lookup')
+        except Exception as e:
+            show_notice('Public key lookup for %s failed: %s' % (target_uri, e))
+
     def _NH_UIInputGotText(self, notification):
         msrp_chat = None
         message_text = notification.data.text
@@ -2047,9 +2152,15 @@ class SIPSessionApplication(SIPApplication):
         encrypted = False
 
         if self.received_private_key:
-            show_notice('Handle private key')
-            self.handle_private_keys(message_text, self.received_private_key)
-            self.received_private_key = None
+            pincode = message_text.strip()
+            if not pincode:
+                show_notice('Enter the 6-digit pincode shown on the other device, or type /hangup to cancel:')
+                return
+            if self.handle_private_keys(pincode, self.received_private_key):
+                self.received_private_key = None
+                show_notice('Private key imported successfully')
+            else:
+                show_notice('Wrong pincode. Try again, or type /hangup to cancel.')
             return
 
         if self.active_session is not None:
@@ -2069,14 +2180,26 @@ class SIPSessionApplication(SIPApplication):
         elif self.message_session_to:
             # compose SMS message
             message_session = self.message_session(self.message_session_to)
-            msg_id = message_session.send_message(message_text)
+            imdn_id = str(uuid.uuid4())
+            msg_id = message_session.send_message(message_text, imdn_id=imdn_id)
             message_text = message_text + ' (%s)' % msg_id
 
+            pgp_available = (
+                getattr(self.account.sms, 'enable_pgp', True)
+                and self.get_public_key(message_session.remote_uri) is not None
+            )
+
             if message_session.encryption.active:
-                local_identity = '%s encrypted text sent to %s' % (local_identity, self.message_session_to)
+                local_identity = '%s OTR encrypted text sent to %s' % (local_identity, self.message_session_to)
+            elif pgp_available:
+                local_identity = '%s PGP encrypted text sent to %s' % (local_identity, self.message_session_to)
             else:
                 local_identity = '%s clear text sent to %s' % (local_identity, self.message_session_to)
-            
+
+            ui = UI()
+            ui.write_keyed(imdn_id, RichText('%s> ' % local_identity, foreground='darkred') + message_text)
+            return
+
         else:
             show_notice('No active chat or message session')
             return
@@ -2109,6 +2232,26 @@ class SIPSessionApplication(SIPApplication):
         notification_center.remove_observer(self, sender=notification.sender)
         answer = notification.data.answer
         self.question = None
+
+        # PGP key (re)generation confirmation
+        if self.pending_key_generate_account is not None:
+            account = self.pending_key_generate_account
+            self.pending_key_generate_account = None
+            if answer == 'y':
+                self._generate_pgp_key(account)
+            else:
+                show_notice('PGP key generation cancelled')
+            return
+
+        # PGP private-key import: user just answered accept/reject
+        if self.received_private_key is not None:
+            if answer == 'a':
+                show_notice('Enter the 6-digit pincode shown on the other device, then press Enter:')
+            else:
+                self.received_private_key = None
+                show_notice('Private key import cancelled')
+            return
+
         if answer == 'a':
             if self.active_session:
                 ui.status = 'Accepting transfer...'
@@ -2160,7 +2303,14 @@ class SIPSessionApplication(SIPApplication):
 
             show_notice(lines)
 
+        first_registration = not self.registration_succeeded.get(account.id, False)
         self.registration_succeeded[account.id] = True
+
+        # On the first successful registration, ask the server whether it
+        # already has a PGP public key for this account. If it does and we
+        # have nothing local, the inbound handler will inform the user.
+        if first_registration and hasattr(account, 'sms') and not isinstance(account, BonjourAccount):
+            self._lookup_public_key(str(account.id))
 
     def _NH_SIPAccountRegistrationDidFail(self, notification):
         account = notification.sender
@@ -2304,7 +2454,10 @@ class SIPSessionApplication(SIPApplication):
             message_session = None
 
         if content_type not in ('text/pgp-private-key', 'text/pgp-public-key', IsComposingDocument.content_type):
+            previous_session_to = self.message_session_to
             self.message_session_to = identity
+            if previous_session_to != identity:
+                self._update_prompt()
 
         content_encoding = data.headers.get('Content-Encoding', Null).body
         if content_encoding == 'deflate':
@@ -2352,11 +2505,42 @@ class SIPSessionApplication(SIPApplication):
             else:
                 if content_type == 'text/pgp-public-key':
                     if content.startswith('-----BEGIN PGP PUBLIC KEY BLOCK-----') and content.endswith('-----END PGP PUBLIC KEY BLOCK-----'):
-                        public_key_path = "%s/%s.pubkey" % (self.keys_path, instance_id or remote_uri)
+                        target_id = instance_id or remote_uri
+                        own_account = (target_id == str(account.id))
+
+                        if own_account:
+                            local_pub_path = getattr(account.sms, 'public_key', None) if hasattr(account, 'sms') else None
+                            local_pub = None
+                            if local_pub_path and os.path.exists(local_pub_path):
+                                try:
+                                    with open(local_pub_path, 'r') as fd:
+                                        local_pub = fd.read().strip()
+                                except (OSError, IOError):
+                                    local_pub = None
+
+                            server_pub = content.strip()
+                            if not local_pub:
+                                show_notice([
+                                    'The server already has a PGP public key for your account %s, but no local key was found.' % target_id,
+                                    'To read messages encrypted with that key, import your private key from another device:',
+                                    '  - On the other device, type /key export. It will show a 6-digit pincode.',
+                                    '  - When the encrypted key arrives here, accept it and type the pincode.',
+                                    'Or run /key generate to create a new key (this will OVERWRITE the server key; messages encrypted with the old key will be unreadable).',
+                                ], bold=True)
+                            elif local_pub == server_pub:
+                                pass  # already in sync — stay quiet
+                            else:
+                                show_notice([
+                                    'The PGP public key on the server for %s differs from your local key.' % target_id,
+                                    'Running /key generate will OVERWRITE the server key with a freshly generated one.',
+                                ], bold=True)
+                            return
+
+                        public_key_path = "%s/%s.pubkey" % (self.keys_path, target_id)
                         fd = open(public_key_path, "wb+")
                         fd.write(content.encode())
                         fd.close()
-                        self.get_public_key(instance_id or remote_uri)
+                        self.get_public_key(target_id)
                         show_notice("Public key saved to %s" % public_key_path)
                         return
 
@@ -2491,6 +2675,25 @@ class SIPSessionApplication(SIPApplication):
             self.active_session.hold()
         self.active_session = session
         self.message_session_to = None
+
+        # If the call has no chat stream, automatically start a message
+        # session to the same contact so typed text becomes SIP MESSAGEs
+        # to the party we're on the line with.
+        has_chat = any(stream.type == 'chat' for stream in session.streams)
+        if not has_chat:
+            try:
+                user = session.remote_identity.uri.user
+                host = session.remote_identity.uri.host
+                if isinstance(user, bytes):
+                    user = user.decode()
+                if isinstance(host, bytes):
+                    host = host.decode()
+                remote = '%s@%s' % (user, host)
+                self.message_session(remote)
+                self.message_session_to = remote
+                show_notice('Message session started with %s; typed text will be sent as SIP MESSAGE' % remote, bold=False)
+            except Exception as e:
+                show_notice('Could not auto-start message session: %s' % e)
 
         self._update_prompt()
         if len(self.connected_sessions) > 1:
@@ -2998,9 +3201,15 @@ class SIPSessionApplication(SIPApplication):
  
         try:
             SIPURI.parse('sip:%s' % target)
-            if self.message_session_to != target:
+            new_session = self.message_session_to != target
+            if new_session:
                 message_session = self.message_session(target, route=route)
             self.message_session_to = target
+            self._update_prompt()
+            # Ask the server for the peer's public key on first /m to that target.
+            if new_session and not isinstance(self.account, BonjourAccount):
+                lookup_target = target if '@' in target else '%s@%s' % (target, self.account.id.domain)
+                self._lookup_public_key(lookup_target)
         except SIPCoreError:
             show_notice('Invalid SIP URI %s' % target)
 
@@ -3393,6 +3602,21 @@ class SIPSessionApplication(SIPApplication):
         elif self.outgoing_session is not None:
             ui.status = 'Cancelling SIP session...'
             self.outgoing_session.end()
+        elif self.message_session_to:
+            # Inside a chat: Ctrl-D exits the chat, not the program.
+            try:
+                message_session = next((session for session in self.message_sessions if session.target == self.message_session_to and self.account == session.account))
+            except StopIteration:
+                self.message_session_to = None
+            else:
+                show_notice('Leaving message session with %s' % self.message_session_to)
+                message_session.end()
+                try:
+                    self.message_sessions.remove(message_session)
+                except KeyError:
+                    pass
+                self.message_session_to = None
+            self._update_prompt()
         else:
             self.stop()
 
@@ -3410,11 +3634,13 @@ class SIPSessionApplication(SIPApplication):
                 pass
             else:
                 message_session.end()
-                try:  
+                try:
                     self.message_sessions.remove(message_session)
                 except KeyError:
                     show_notice('Message session not found')
                     pass
+            self.message_session_to = None
+            self._update_prompt()
 
     @run_in_green_thread
     def _CH_dtmf(self, tones):
@@ -3698,6 +3924,189 @@ class SIPSessionApplication(SIPApplication):
             chat_stream.encryption.verified = False
             chat_stream.encryption.smp_verify(self.smp_secret.encode(), question=question.encode())
 
+    def _CH_key(self, action=None):
+        if action not in ('send', 'show', 'export', 'generate', 'lookup'):
+            show_notice('Usage: /key {send|show|export|generate|lookup}')
+            return
+
+        if not hasattr(self.account, 'sms'):
+            show_notice('Account %s does not support PGP keys' % self.account.id)
+            return
+
+        if action == 'generate':
+            private_key_path = getattr(self.account.sms, 'private_key', None)
+            public_key_path = getattr(self.account.sms, 'public_key', None)
+            key_exists = ((private_key_path and os.path.exists(private_key_path)) or
+                          (public_key_path and os.path.exists(public_key_path)))
+
+            if key_exists:
+                if self.question is not None:
+                    show_notice('Another question is currently pending; please answer it first')
+                    return
+                self.pending_key_generate_account = self.account
+                self.question = Question(
+                    "A new PGP key will REPLACE the existing one for %s and be uploaded to the server. "
+                    "Previously encrypted messages will not be readable on devices that don't have the new key. "
+                    "Proceed? (y)es/(n)o" % self.account.id,
+                    'yn', bold=True)
+                notification_center = NotificationCenter()
+                notification_center.add_observer(self, sender=self.question)
+                ui = UI()
+                ui.add_question(self.question)
+                return
+
+            self._generate_pgp_key(self.account)
+            return
+
+        if action == 'lookup':
+            self._lookup_public_key(str(self.account.id))
+            return
+
+        public_key_path = getattr(self.account.sms, 'public_key', None)
+        private_key_path = getattr(self.account.sms, 'private_key', None)
+
+        if not public_key_path:
+            show_notice('No PGP public key is configured for account %s. Use /key generate to create one.' % self.account.id)
+            return
+
+        try:
+            with open(public_key_path, 'r') as fd:
+                public_key = fd.read()
+        except (OSError, IOError) as e:
+            show_notice('Cannot read PGP public key from %s: %s' % (public_key_path, e))
+            return
+
+        if action == 'show':
+            lines = ['PGP public key for %s (%s):' % (self.account.id, public_key_path)]
+            lines.extend(public_key.splitlines())
+            show_notice(lines, bold=False)
+            return
+
+        if action == 'send':
+            if not self.message_session_to:
+                show_notice('/key send can be used only during an active message session')
+                return
+
+            message_session = self.message_session(self.message_session_to)
+
+            if not message_session:
+                show_notice('/key send can be used only during an active message session')
+                return
+
+            message_session.send_message(public_key, content_type='text/pgp-public-key')
+            show_notice('PGP public key sent to %s' % self.message_session_to)
+            return
+
+        # action == 'export' — send symmetrically-encrypted private key to own account
+        if not private_key_path:
+            show_notice('No PGP private key is configured for account %s.' % self.account.id)
+            return
+
+        try:
+            with open(private_key_path, 'r') as fd:
+                private_key = fd.read()
+        except (OSError, IOError) as e:
+            show_notice('Cannot read PGP private key from %s: %s' % (private_key_path, e))
+            return
+
+        # 6-digit random pincode, same scheme as blink: two 3-digit blocks zero-padded
+        pincode = ''.join([str(random.randint(0, 999)).zfill(3) for _ in range(2)])
+
+        try:
+            pgp_message = pgpy.PGPMessage.new(private_key)
+            enc_message = pgp_message.encrypt(pincode)
+        except Exception as e:
+            show_notice('PGP symmetric encryption failed: %s' % e)
+            return
+
+        # Ensure the public-key block is terminated by a newline so the
+        # subsequent -----BEGIN PGP MESSAGE----- marker sits on its own line.
+        body = public_key.rstrip() + '\n' + str(enc_message)
+
+        target = str(self.account.id)
+        message_session = self.message_session(target)
+        if not message_session:
+            show_notice('Could not create message session to own account %s' % target)
+            return
+
+        message_session.send_message(body, content_type='text/pgp-private-key')
+
+        show_notice(
+            ['Encrypted private key sent to %s' % target,
+             'Pincode (enter on the other device to import the key): %s' % pincode],
+            bold=True)
+
+    @run_in_green_thread
+    def _generate_pgp_key(self, account):
+        try:
+            from pgpy.constants import PubKeyAlgorithm, KeyFlags, HashAlgorithm, SymmetricKeyAlgorithm, CompressionAlgorithm
+        except ImportError as e:
+            show_notice('PGP key generation requires pgpy: %s' % e)
+            return
+
+        show_notice('Generating a new 4096-bit RSA PGP key for %s, this may take a while...' % account.id)
+
+        try:
+            key = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 4096)
+            display_name = account.display_name or str(account.id)
+            uid = pgpy.PGPUID.new(str(display_name), email=str(account.id))
+            key.add_uid(
+                uid,
+                usage={KeyFlags.Sign, KeyFlags.EncryptCommunications, KeyFlags.EncryptStorage},
+                hashes=[HashAlgorithm.SHA256, HashAlgorithm.SHA384, HashAlgorithm.SHA512, HashAlgorithm.SHA224],
+                ciphers=[SymmetricKeyAlgorithm.AES256, SymmetricKeyAlgorithm.AES192, SymmetricKeyAlgorithm.AES128],
+                compression=[CompressionAlgorithm.ZLIB, CompressionAlgorithm.BZ2, CompressionAlgorithm.ZIP, CompressionAlgorithm.Uncompressed],
+            )
+        except Exception as e:
+            show_notice('PGP key generation failed: %s' % e)
+            return
+
+        private_key_content = str(key)
+        public_key_content = str(key.pubkey)
+
+        private_key_path = "%s/%s.privkey" % (self.keys_path, account.id)
+        public_key_path = "%s/%s.pubkey" % (self.keys_path, account.id)
+
+        try:
+            with open(private_key_path, 'w') as fd:
+                fd.write(private_key_content)
+            try:
+                os.chmod(private_key_path, 0o600)
+            except OSError:
+                pass
+            show_notice('Private key saved to %s' % private_key_path)
+
+            with open(public_key_path, 'w') as fd:
+                fd.write(public_key_content)
+            show_notice('Public key saved to %s' % public_key_path)
+        except (OSError, IOError) as e:
+            show_notice('Could not save PGP key: %s' % e)
+            return
+
+        account.sms.private_key = private_key_path
+        account.sms.public_key = public_key_path
+        account.sms.public_key_checksum = hashlib.sha1(public_key_content.encode()).hexdigest()
+        account.save()
+
+        # drop any cached copies so the new key is picked up
+        self.private_keys.pop(account.id, None)
+        self.public_keys.pop(str(account.id), None)
+
+        # Upload the new public key to the server so other devices on this
+        # account can find it. The server stores it; subsequent lookups
+        # (startup or /m from another device) will return this key.
+        if not isinstance(account, BonjourAccount):
+            try:
+                target = str(account.id)
+                message_session = self.message_session(target, account=account)
+                message_session.send_message(public_key_content,
+                                             content_type='text/pgp-public-key')
+                show_notice('New public key uploaded to %s' % target)
+            except Exception as e:
+                show_notice('Could not upload new public key: %s' % e)
+
+        show_notice('PGP key for %s generated. Use /key export to share the private key with your other devices.' % account.id)
+
     def _CH_zrtp_verified(self):
         if self.active_session is None:
             show_notice("ZRTP functions can be used only during active audio sessions")
@@ -3848,6 +4257,11 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /input [device]: change audio input device (ctrl-x i)')
         lines.append('  /output [device]: change audio output device (ctrl-x o)')
         lines.append('  /alert [device]: change audio alert device (ctrl-x a)')
+        lines.append('  /key generate: generate a new PGP key pair for the current account, upload it to the server (asks to confirm if one already exists)')
+        lines.append('  /key show: display your PGP public key on the screen')
+        lines.append('  /key send: send your PGP public key to the remote party in the current message session')
+        lines.append('  /key export: send your PGP private key, symmetrically encrypted with a random 6-digit pincode, to your own account (for import on another device)')
+        lines.append('  /key lookup: ask the server whether it has a PGP public key for your account')
         lines.append('  /quit: quit the program (ctrl-x q)')
         lines.append('  /help: display this help message (ctrl-x ?)')
         lines.append('In call commands:')
@@ -3870,20 +4284,27 @@ class SIPSessionApplication(SIPApplication):
         show_notice(lines, bold=False)
 
     def _update_prompt(self):
-        return
         ui = UI()
         session = self.active_session
-        if session is None:
-            ui.prompt = Prompt('%s@%s' % (self.account.id.username, self.account.id.domain), foreground='default')
-        else:
+
+        if session is not None:
             info = []
-            identity = '%s@%s' % (session.remote_identity.uri.user, session.remote_identity.uri.host)
+            try:
+                user = session.remote_identity.uri.user
+                host = session.remote_identity.uri.host
+                if isinstance(user, bytes):
+                    user = user.decode()
+                if isinstance(host, bytes):
+                    host = host.decode()
+                identity = '%s@%s' % (user, host)
+            except Exception:
+                identity = str(getattr(session.remote_identity, 'uri', ''))
             if session.remote_identity.display_name:
                 identity = '%s (%s)' % (session.remote_identity.display_name, identity)
             streams = '/'.join(stream.type.capitalize() for stream in session.streams)
             chat_stream = next((stream for stream in session.streams if stream.type == 'chat'), None)
             audio_stream = next((stream for stream in session.streams if stream.type == 'audio'), None)
-        
+
             if chat_stream and chat_stream.encryption.active:
                 info.append('Chat encrypted verified' if chat_stream.encryption.verified else 'Chat encrypted NOT verified')
 
@@ -3898,10 +4319,17 @@ class SIPSessionApplication(SIPApplication):
                         info.append('Audio encrypted NOT verified')
                 else:
                     info.append('Audio encrypted NOT verified')
-            
+
             if not info:
                 info = ['not encrypted']
             ui.prompt = Prompt('%s to %s (%s)' % (streams, identity, ", ".join(info)), foreground='darkred')
+            return
+
+        if self.message_session_to:
+            ui.prompt = Prompt('Chat with %s' % self.message_session_to, foreground='darkred')
+            return
+
+        ui.prompt = Prompt('%s@%s' % (self.account.id.username, self.account.id.domain), foreground='default')
 
 
 def parse_handle_call_option(option, opt_str, value, parser, name):

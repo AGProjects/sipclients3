@@ -264,6 +264,12 @@ class UI(Thread, metaclass=Singleton):
         self.questions = deque()
         self.stopping = False
         self.lock = RLock()
+        # Track rendered chat-message rows so IMDN delivered/displayed
+        # ticks can be stamped on the same row as the original message.
+        # Key: arbitrary string (CPIM Message-ID). Value: dict with
+        # 'row' (1-based terminal row of the last visual line of the message),
+        # 'col' (1-based column where the tick area starts), and 'tick' (str).
+        self.message_rows = {}
         self.event_queue = EventQueue(handler=lambda function_self_args_kwargs: function_self_args_kwargs[0](function_self_args_kwargs[1], *function_self_args_kwargs[2], **function_self_args_kwargs[3]), name='UI operation handling')
 
     def start(self, prompt='', command_sequence='/', control_char='\x18', control_bindings={}, display_commands=True, display_text=True):
@@ -341,31 +347,100 @@ class UI(Thread, metaclass=Singleton):
     @run_in_ui_thread
     def writelines(self, text_lines):
         with self.lock:
-            if not text_lines:
+            self._write_lines_unlocked(text_lines)
+
+    @run_in_ui_thread
+    def write_keyed(self, key, text):
+        """Write a single line of text and remember the row/col so a tick
+        can later be stamped at the end of the same line via set_tick(key, ...)."""
+        with self.lock:
+            if text is None:
                 return
-            # go to beginning of prompt line
-            self._raw_write('\x1b[%d;%dH' % (self.prompt_y, 1))
-            # erase everything beneath it
-            self._raw_write('\x1b[0J')
-            # start writing lines
             window_size = self.window_size
-            for text in text_lines:
-                # write the line
-                self._raw_write('%s\n' % text)
-                # calculate the number of lines the text will produce
-                text_lines = (len(text)-1)/window_size.x + 1
-                # calculate how much the text will automatically scroll the window
-                window_height = struct.unpack('HHHH', fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))[0]
-                auto_scroll_amount = max(0, (self.prompt_y+text_lines-1) - (window_height-1))
-                # calculate the new position of the prompt
-                self.prompt_y += text_lines - auto_scroll_amount
-                # we might need to scroll up to make the prompt position visible again
-                scroll_up = int(self.prompt_y - window_height)
-                if scroll_up > 0:
-                    self.prompt_y -= scroll_up
-                    self._scroll_up(scroll_up)
-            # redraw the prompt
-            self._update_prompt()
+            text_len = len(text)
+            wrapped_rows = max(1, (text_len - 1) // window_size.x + 1) if text_len else 1
+            last_row = self.prompt_y + wrapped_rows - 1
+            last_col = ((text_len - 1) % window_size.x) + 1 if text_len else 1
+            self._write_lines_unlocked([text])
+            # _write_lines_unlocked may have scrolled the terminal. It
+            # also updates other tracked rows; mirror that here on the
+            # row we just computed (the scroll math is already baked in
+            # because _write_lines_unlocked shifts all message_rows).
+            # We didn't add ours yet, so apply scroll after the fact:
+            # the new last_row is wherever prompt_y now points minus the
+            # number of rows the next prompt occupies (1).
+            actual_last_row = self.prompt_y - 1
+            if actual_last_row >= 1:
+                self.message_rows[key] = {
+                    'row': actual_last_row,
+                    'col': last_col + 1,  # column AFTER the last printed char (1-based)
+                    'tick': ''
+                }
+
+    @run_in_ui_thread
+    def set_tick(self, key, tick_str):
+        """Stamp/replace the tick at the end of the recorded row for key.
+        Subsequent calls with a longer tick overwrite the previous one."""
+        with self.lock:
+            info = self.message_rows.get(key)
+            if not info:
+                return
+            row = info['row']
+            col = info['col']
+            # Save cursor
+            self._raw_write('\x1b[s')
+            # Move to the tick position
+            self._raw_write('\x1b[%d;%dH' % (row, col))
+            # Clear from cursor to end of line, then write " <tick>"
+            self._raw_write('\x1b[K')
+            self._raw_write(' ' + tick_str)
+            # Restore cursor
+            self._raw_write('\x1b[u')
+            info['tick'] = tick_str
+
+    def _write_lines_unlocked(self, text_lines):
+        """Body of writelines. Caller must hold self.lock."""
+        if not text_lines:
+            return
+        # go to beginning of prompt line
+        self._raw_write('\x1b[%d;%dH' % (self.prompt_y, 1))
+        # erase everything beneath it
+        self._raw_write('\x1b[0J')
+        # start writing lines
+        window_size = self.window_size
+        for text in text_lines:
+            # write the line
+            self._raw_write('%s\n' % text)
+            # calculate the number of lines the text will produce
+            line_count = (len(text)-1)//window_size.x + 1 if len(text) else 1
+            # calculate how much the text will automatically scroll the window
+            window_height = struct.unpack('HHHH', fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))[0]
+            auto_scroll_amount = max(0, (self.prompt_y+line_count-1) - (window_height-1))
+            # if the terminal auto-scrolled, every tracked row shifts up
+            if auto_scroll_amount:
+                self._shift_message_rows(auto_scroll_amount)
+            # calculate the new position of the prompt
+            self.prompt_y += line_count - auto_scroll_amount
+            # we might need to scroll up to make the prompt position visible again
+            scroll_up = int(self.prompt_y - window_height)
+            if scroll_up > 0:
+                self.prompt_y -= scroll_up
+                self._scroll_up(scroll_up)
+                self._shift_message_rows(scroll_up)
+        # redraw the prompt
+        self._update_prompt()
+
+    def _shift_message_rows(self, n):
+        """Shift all recorded message rows up by n (drop those off the top)."""
+        if n <= 0 or not self.message_rows:
+            return
+        to_drop = []
+        for k, info in self.message_rows.items():
+            info['row'] -= n
+            if info['row'] < 1:
+                to_drop.append(k)
+        for k in to_drop:
+            del self.message_rows[k]
 
     @run_in_ui_thread
     def add_question(self, question):
