@@ -387,15 +387,19 @@ class UI(Thread, metaclass=Singleton):
                 return
             row = info['row']
             col = info['col']
-            # Save cursor
-            self._raw_write('\x1b[s')
+            # Guard against rows that have scrolled off the top of the screen.
+            if row < 1:
+                return
             # Move to the tick position
             self._raw_write('\x1b[%d;%dH' % (row, col))
             # Clear from cursor to end of line, then write " <tick>"
             self._raw_write('\x1b[K')
             self._raw_write(' ' + tick_str)
-            # Restore cursor
-            self._raw_write('\x1b[u')
+            # Move the cursor back to the tracked prompt input position so a
+            # subsequent prompt redraw doesn't overwrite the tick. Some
+            # terminals don't reliably honour \x1b[s / \x1b[u.
+            if self.cursor_y is not None and self.cursor_x is not None:
+                self._raw_write('\x1b[%d;%dH' % (self.cursor_y, self.cursor_x))
             info['tick'] = tick_str
 
     def _write_lines_unlocked(self, text_lines):
@@ -585,6 +589,7 @@ class UI(Thread, metaclass=Singleton):
             if scroll_up > 0:
                 self._scroll_up(scroll_up)
                 self.prompt_y -= scroll_up
+                self._shift_message_rows(scroll_up)
             # go to the position where the question will be rendered
             self._raw_write('\x1b[%d;%dH' % (self.prompt_y, 1))
             # erase everything beneath it
@@ -613,6 +618,7 @@ class UI(Thread, metaclass=Singleton):
             if scroll_up > 0:
                 self._scroll_up(scroll_up)
                 self.prompt_y -= scroll_up
+                self._shift_message_rows(scroll_up)
             # goto the position of the new prompt
             self._raw_write('\x1b[%d;%dH' % (self.prompt_y, 1))
             # erase everything beneath it

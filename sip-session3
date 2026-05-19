@@ -73,6 +73,7 @@ from sipsimple.account import Account, AccountManager, BonjourAccount
 from sipsimple.application import SIPApplication
 from sipsimple.audio import WavePlayer
 from sipsimple.configuration import ConfigurationError
+from sipsimple.configuration.datatypes import VideoResolution
 from sipsimple.configuration.settings import SIPSimpleSettings
 from sipsimple.core import Route
 from sipsimple.core import CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
@@ -155,26 +156,91 @@ class BonjourNeighbour(object):
 
 
 class RTPStatisticsThread(Thread):
+    INTERVAL = 10  # seconds between samples
+
     def __init__(self):
         Thread.__init__(self)
         self.setDaemon(True)
         self.stopped = False
+        # per-stream byte counters for bandwidth deltas, keyed by id(stream)
+        self._last_bytes = {}
+
+    @staticmethod
+    def _bytes(direction):
+        # sipsimple statistics may use 'bytes' or 'octets' depending on version
+        return direction.get('bytes', direction.get('octets', 0)) or 0
+
+    def _bandwidth_kbps(self, stream, stats):
+        key = id(stream)
+        rx_now = self._bytes(stats['rx'])
+        tx_now = self._bytes(stats['tx'])
+        rx_prev, tx_prev, t_prev = self._last_bytes.get(key, (rx_now, tx_now, None))
+        from time import monotonic
+        t_now = monotonic()
+        self._last_bytes[key] = (rx_now, tx_now, t_now)
+        if t_prev is None:
+            return 0.0, 0.0
+        dt = max(t_now - t_prev, 0.001)
+        return (rx_now - rx_prev) * 8 / 1000.0 / dt, (tx_now - tx_prev) * 8 / 1000.0 / dt
+
+    @staticmethod
+    def _video_resolution(stream):
+        # Try a few attribute paths that different sipsimple versions expose.
+        for path in (('producer', 'size'), ('producer', 'frame_size'),
+                     ('producer', 'resolution'), ('resolution',)):
+            obj = stream
+            try:
+                for attr in path:
+                    obj = getattr(obj, attr)
+                w = getattr(obj, 'width', None)
+                h = getattr(obj, 'height', None)
+                if w and h:
+                    return '%sx%s' % (w, h)
+            except AttributeError:
+                continue
+        # Fall back to configured outbound resolution
+        try:
+            res = SIPSimpleSettings().video.resolution
+            return '%sx%s' % (res.width, res.height)
+        except Exception:
+            return '?'
 
     def run(self):
         application = SIPSessionApplication()
         while not self.stopped:
-            if application.active_session is not None and application.active_session.streams:
-                audio_stream = next((stream for stream in application.active_session.streams if stream.type == 'audio'), None)
-                if audio_stream is not None:
-                    stats = audio_stream.statistics
-                    if stats is not None:
-                        reactor.callFromThread(show_notice, '%s RTP statistics: RTT=%d ms, packet loss=%.1f%%, jitter RX/TX=%d/%d ms' % 
-                                                                (datetime.now().replace(microsecond=0),
-                                                                stats['rtt']['avg'] / 1000,
-                                                                100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0,
-                                                                stats['rx']['jitter']['avg'] / 1000,
-                                                                stats['tx']['jitter']['avg'] / 1000))
-            sleep(10)
+            session = application.active_session
+            if session is not None and session.streams:
+                lines = []
+                ts = datetime.now().replace(microsecond=0)
+                seen = set()
+                for stream in session.streams:
+                    if stream.type not in ('audio', 'video'):
+                        continue
+                    stats = stream.statistics
+                    if stats is None:
+                        continue
+                    seen.add(id(stream))
+                    rx_kbps, tx_kbps = self._bandwidth_kbps(stream, stats)
+                    rx_pkts = stats['rx']['packets']
+                    loss = 100.0 * stats['rx']['packets_lost'] / rx_pkts if rx_pkts else 0
+                    base = ('%s RTP %s: RTT=%d ms, loss=%.1f%%, '
+                            'jitter RX/TX=%d/%d ms, bw RX/TX=%.0f/%.0f kbps' % (
+                                ts, stream.type,
+                                stats['rtt']['avg'] / 1000,
+                                loss,
+                                stats['rx']['jitter']['avg'] / 1000,
+                                stats['tx']['jitter']['avg'] / 1000,
+                                rx_kbps, tx_kbps))
+                    if stream.type == 'video':
+                        base += ', resolution=%s' % self._video_resolution(stream)
+                    lines.append(base)
+                # forget counters for streams that no longer exist
+                for key in list(self._last_bytes):
+                    if key not in seen:
+                        del self._last_bytes[key]
+                if lines:
+                    reactor.callFromThread(show_notice, lines)
+            sleep(self.INTERVAL)
 
     def stop(self):
         self.stopped = True
@@ -1062,8 +1128,14 @@ class IncomingCallInitializer(object):
 
         # ask question
         identity = str(self.session.remote_identity.uri)
-        if self.session.remote_identity.display_name:
-            identity = '"%s" <%s>' % (self.session.remote_identity.display_name, identity)
+        display_name = self.session.remote_identity.display_name
+        if display_name:
+            uri = self.session.remote_identity.uri
+            user = uri.user.decode() if isinstance(uri.user, bytes) else (uri.user or '')
+            host = uri.host.decode() if isinstance(uri.host, bytes) else (uri.host or '')
+            bare = '%s@%s' % (user, host)
+            if display_name not in (identity, bare):
+                identity = '"%s" <%s>' % (display_name, identity)
         streams = '/'.join(stream.type for stream in self.session.proposed_streams)
         if self.session.replaced_session:
             self.session.accept(self.session.proposed_streams)
@@ -1146,23 +1218,33 @@ class IncomingCallInitializer(object):
         for stream in notification.data.streams:
             if stream.type in ('audio', 'video'):
                 show_notice('%s stream using %s codec at %sHz' % (stream.type.title(), stream.codec.capitalize(), stream.sample_rate))
-                
-                if stream.ice_active:
-                    show_notice('%s RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)\n' % (stream.type.title(), stream.local_rtp_address,
-                                                                                                        stream.local_rtp_port,
-                                                                                                        stream.local_rtp_candidate.type.lower(),
-                                                                                                        stream.remote_rtp_address,
-                                                                                                        stream.remote_rtp_port,
-                                                                                                        stream.remote_rtp_candidate.type.lower()))
-                else:
-                    show_notice('%s RTP endpoints %s:%d <-> %s:%d\n' % (stream.type.title(), 
-                                                                               stream.local_rtp_address, 
-                                                                               stream.local_rtp_port, 
-                                                                               stream.remote_rtp_address, 
-                                                                               stream.remote_rtp_port))
 
+                if stream.ice_active:
+                    show_notice('%s RTP endpoints %s:%d (ICE type %s) <-> %s:%d (ICE type %s)' % (stream.type.title(), stream.local_rtp_address,
+                                                                                                      stream.local_rtp_port,
+                                                                                                      stream.local_rtp_candidate.type.lower(),
+                                                                                                      stream.remote_rtp_address,
+                                                                                                      stream.remote_rtp_port,
+                                                                                                      stream.remote_rtp_candidate.type.lower()))
+                else:
+                    show_notice('%s RTP endpoints %s:%d <-> %s:%d' % (stream.type.title(),
+                                                                             stream.local_rtp_address,
+                                                                             stream.local_rtp_port,
+                                                                             stream.remote_rtp_address,
+                                                                             stream.remote_rtp_port))
                 if stream.encryption.active:
-                    show_notice('%s RTP stream is encrypted using %s (%s)\n' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode()))
+                    show_notice('%s RTP stream is encrypted using %s (%s)' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode()))
+                if stream.type == 'video':
+                    settings = SIPSimpleSettings()
+                    camera = settings.video.device if settings.video.device is not None else 'system default'
+                    resolution = settings.video.resolution
+                    framerate = settings.video.framerate
+                    max_bitrate = settings.video.max_bitrate
+                    show_notice('Video camera: %s (configured %sx%s @ %s fps, max bitrate %s kbps)' % (
+                        camera,
+                        resolution.width, resolution.height,
+                        framerate,
+                        int(max_bitrate * 1000) if max_bitrate else 'unlimited'))
         if session.remote_user_agent is not None:
             show_notice('Remote SIP User Agent is "%s"' % session.remote_user_agent)
 
@@ -1199,13 +1281,15 @@ class IncomingCallInitializer(object):
 @implementer(IObserver)
 class OutgoingProposalHandler(object):
 
-    def __init__(self, session, audio=False, chat=False):
+    def __init__(self, session, audio=False, chat=False, video=False):
         self.session = session
         self.stream = None
         if audio:
             self.stream = MediaStreamRegistry.AudioStream()
         if chat:
             self.stream = MediaStreamRegistry.ChatStream()
+        if video:
+            self.stream = MediaStreamRegistry.VideoStream()
         if not self.stream:
             raise ValueError("Need to specify exactly one stream")
 
@@ -1581,8 +1665,14 @@ class IncomingTransferHandler(object):
 
         # ask question
         identity = str(self.session.remote_identity.uri)
-        if self.session.remote_identity.display_name:
-            identity = '"%s" <%s>' % (self.session.remote_identity.display_name, identity)
+        display_name = self.session.remote_identity.display_name
+        if display_name:
+            uri = self.session.remote_identity.uri
+            user = uri.user.decode() if isinstance(uri.user, bytes) else (uri.user or '')
+            host = uri.host.decode() if isinstance(uri.host, bytes) else (uri.host or '')
+            bare = '%s@%s' % (user, host)
+            if display_name not in (identity, bare):
+                identity = '"%s" <%s>' % (display_name, identity)
         self.question = Question("Incoming file transfer for %s from '%s', do you want to accept? (a)ccept/(r)eject" % (os.path.basename(self.filename), identity), 'ari', bold=True)
         notification_center.add_observer(self, sender=self.question)
         ui = UI()
@@ -1954,6 +2044,14 @@ class SIPSessionApplication(SIPApplication):
     def _NH_SIPApplicationDidStart(self, notification):
         settings = SIPSimpleSettings()
         engine = Engine()
+        # Force outbound video to 480p (640x480) regardless of saved settings.
+        forced_resolution = VideoResolution('640x480')
+        if settings.video.resolution != forced_resolution:
+            settings.video.resolution = forced_resolution
+            settings.save()
+        engine.set_video_options(settings.video.resolution,
+                                 settings.video.framerate,
+                                 settings.video.max_bitrate)
         show_notice('Available audio codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_codecs]))
         show_notice('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
 
@@ -2190,7 +2288,6 @@ class SIPSessionApplication(SIPApplication):
             message_session = self.message_session(self.message_session_to)
             imdn_id = str(uuid.uuid4())
             msg_id = message_session.send_message(message_text, imdn_id=imdn_id)
-            message_text = message_text + ' (%s)' % msg_id
 
             pgp_available = (
                 getattr(self.account.sms, 'enable_pgp', True)
@@ -2198,14 +2295,16 @@ class SIPSessionApplication(SIPApplication):
             )
 
             if message_session.encryption.active:
-                local_identity = '%s OTR encrypted text sent to %s' % (local_identity, self.message_session_to)
+                label = 'OTR encrypted text to   %s' % self.message_session_to
             elif pgp_available:
-                local_identity = '%s PGP encrypted text sent to %s' % (local_identity, self.message_session_to)
+                label = 'PGP encrypted text to   %s' % self.message_session_to
             else:
-                local_identity = '%s clear text sent to %s' % (local_identity, self.message_session_to)
+                label = 'clear text to   %s' % self.message_session_to
+
+            prefix = '%s %s: ' % (datetime.now().replace(microsecond=0), label)
 
             ui = UI()
-            ui.write_keyed(imdn_id, RichText('%s> ' % local_identity, foreground='darkred') + message_text)
+            ui.write_keyed(imdn_id, RichText(prefix, foreground='darkred') + message_text)
             return
 
         else:
@@ -2454,8 +2553,11 @@ class SIPSessionApplication(SIPApplication):
             #        pass
             if parsed_payload is None:
                 return
-            
-                    
+
+            # Internal control messages should not be rendered in the chat.
+            if content_type == 'application/sylk-api-pgp-key-lookup':
+                return
+
         else:
             content = data.body
             encrypted = False
@@ -2496,9 +2598,9 @@ class SIPSessionApplication(SIPApplication):
 
             is_composing = True
 
-        if from_header.display_name:
+        if from_header.display_name and from_header.display_name != identity:
             identity = '"%s" <%s>' % (from_header.display_name, identity)
-            
+
         content = content.decode() if isinstance(content, bytes) else content
         content = content.strip()
         #show_notice('Message type %s' % content_type)
@@ -2509,7 +2611,7 @@ class SIPSessionApplication(SIPApplication):
             reactor.callLater(4, setattr, ui, 'status', None)
         else:
             if encrypted:
-                show_notice("%s %s wrote: %s (%s encrypted)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+                show_notice("%s %s wrote: %s (encrypted)" % (datetime.now().replace(microsecond=0), identity, content))
             else:
                 if content_type == 'text/pgp-public-key':
                     if content.startswith('-----BEGIN PGP PUBLIC KEY BLOCK-----') and content.endswith('-----END PGP PUBLIC KEY BLOCK-----'):
@@ -2594,7 +2696,7 @@ class SIPSessionApplication(SIPApplication):
                         ui.add_question(self.question)
                 else:
                     if content.startswith('-----BEGIN PGP MESSAGE-----') and content.endswith('-----END PGP MESSAGE-----') and not private_key:
-                        show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, 'Received a PGP message for which we have no private key', msg_id))
+                        show_notice("%s %s wrote: %s" % (datetime.now().replace(microsecond=0), identity, 'Received a PGP message for which we have no private key'))
                         if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                              message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'error')
                     else:
@@ -2602,17 +2704,17 @@ class SIPSessionApplication(SIPApplication):
                             pgpMessage = pgpy.PGPMessage.from_blob(content.encode())
                             decrypted_message = private_key.decrypt(pgpMessage)
                         except (pgpy.errors.PGPDecryptionError, pgpy.errors.PGPError) as e:
-                            show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, 'PGP decrypt error', msg_id))
+                            show_notice("%s %s wrote: %s" % (datetime.now().replace(microsecond=0), identity, 'PGP decrypt error'))
                             if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                                 message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'error')
                             return
                         except ValueError as e:
-                            show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+                            show_notice("%s %s wrote: %s" % (datetime.now().replace(microsecond=0), identity, content))
                             if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                                 message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
                         else:
                             content = bytes(decrypted_message.message, 'latin1').decode()
-                            show_notice("%s %s wrote: %s (%s)" % (datetime.now().replace(microsecond=0), identity, content, msg_id))
+                            show_notice("%s PGP encrypted text from %s: %s" % (datetime.now().replace(microsecond=0), identity, content))
                             if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                                 message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
 
@@ -3181,6 +3283,15 @@ class SIPSessionApplication(SIPApplication):
             show_notice('Please cancel any outgoing sessions before starting a new one')
             return
         call_initializer = OutgoingCallInitializer(self.account, target, audio=True, chat=chat_option=='+chat')
+        call_initializer.start()
+
+    def _CH_video(self, target, chat_option=None):
+        if chat_option and chat_option != '+chat':
+            raise TypeError()
+        if self.outgoing_session is not None:
+            show_notice('Please cancel any outgoing sessions before starting a new one')
+            return
+        call_initializer = OutgoingCallInitializer(self.account, target, audio=True, video=True, chat=chat_option=='+chat')
         call_initializer.start()
 
     def _CH_m(self, target=None):
@@ -4164,10 +4275,17 @@ class SIPSessionApplication(SIPApplication):
         if self.active_session is None:
             show_notice('There is no active session')
             return
+        if stream_name not in ('audio', 'chat', 'video'):
+            show_notice('Illegal argument to /add. Type /help for a list of available commands.')
+            return
         if stream_name in (stream.type for stream in self.active_session.streams):
             show_notice('The active session already has a %s stream' % stream_name)
             return
-        proposal_handler = OutgoingProposalHandler(self.active_session, **{stream_name: True})
+        try:
+            proposal_handler = OutgoingProposalHandler(self.active_session, **{stream_name: True})
+        except ValueError as e:
+            show_notice('Cannot add %s stream: %s' % (stream_name, e))
+            return
         try:
             proposal_handler.start()
         except IllegalStateError:
@@ -4249,6 +4367,8 @@ class SIPSessionApplication(SIPApplication):
         lines.append('General commands:')
         lines.append('  /account [list|register|user@domain|enroll user password email display_name]: account management')
         lines.append('  /call {user[@domain]} [+video]: call the specified user using audio and optionally video')
+        lines.append('  /audio {user[@domain]} [+chat]: call the specified user using audio and possibly chat')
+        lines.append('  /video {user[@domain]} [+chat]: call the specified user using audio and video, and possibly chat')
         lines.append('  /chat {user[@domain]} [+audio]: call the specified user using chat and possibly audio')
         lines.append('  /conf {room}: join conference room using chat and audio')
         lines.append('  /[message | m] {user[@domain]}: start a message session')
@@ -4283,7 +4403,7 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /otr_answer answer: Answer OTR verification question using SMP protocol')
         lines.append('  /otr_secret [secret]: show or set OTR secret')
         lines.append('  /otr_question question: Ask OTR verification question using SMP protocol')
-        lines.append('  /add {chat|audio}: add a stream to the current session')
+        lines.append('  /add {chat|audio|video}: add a stream to the current session')
         lines.append('  /remove {chat|audio}: remove a stream from the current session')
         lines.append('  /add_participant {user@domain}: add the specified user to the conference')
         lines.append('  /remove_participant {user@domain}: remove the specified user from the conference')
@@ -4317,10 +4437,16 @@ class SIPSessionApplication(SIPApplication):
                 info.append('Chat encrypted verified' if chat_stream.encryption.verified else 'Chat encrypted NOT verified')
 
             if audio_stream and audio_stream.encryption.active:
-                if audio_stream.encryption.zrtp:
-                    if audio_stream.encryption.zrtp.verified:
-                        if audio_stream.encryption.zrtp.peer_name:
-                            info.append('Audio encrypted verified with %s' % audio_stream.encryption.zrtp.peer_name)
+                zrtp = None
+                if audio_stream.encryption.type == 'ZRTP':
+                    try:
+                        zrtp = audio_stream.encryption.zrtp
+                    except RuntimeError:
+                        zrtp = None
+                if zrtp is not None:
+                    if zrtp.verified:
+                        if zrtp.peer_name:
+                            info.append('Audio encrypted verified with %s' % zrtp.peer_name)
                         else:
                             info.append('Audio encrypted verified')
                     else:
