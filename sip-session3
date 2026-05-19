@@ -23,6 +23,14 @@ try:
 except ImportError:
     pass
 warnings.filterwarnings('ignore', module=r'pgpy(\..*)?')
+# pgpy emits these UserWarnings with stacklevel pointing at the caller, so the
+# module filter above doesn't catch them. Match by message instead.
+warnings.filterwarnings('ignore', category=UserWarning,
+                        message=r'Selected symmetric algorithm not in key preferences')
+warnings.filterwarnings('ignore', category=UserWarning,
+                        message=r'Selected compression algorithm not in key preferences')
+warnings.filterwarnings('ignore', category=UserWarning,
+                        message=r'Selected hash algorithm not in key preferences')
 
 import pgpy
 import subprocess
