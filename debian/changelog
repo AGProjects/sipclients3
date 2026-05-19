@@ -1,3 +1,23 @@
+sipclients (5.4.2) unstable; urgency=medium
+
+  * Added video at start and re-invite for video calls
+  * Added PGP key management comptible with Sylk Mobile
+  * UI fixes
+  * Added support for zRTP escalation compatible with Sylk Mobile
+  * Automatically switch to the new connected audio device in sip-session3
+  * Automatically switch to the new connected audio device
+  * Set default audio sample rate to 32000 Hz
+  * Check if Bonjour when register
+  * Show all accounts
+  * Only send IMDN displayed notification if message was decrypted
+  * Session fixes
+  * Automatically accept incoming transfered session
+  * Log configured codecs
+  * Added call transfer to sip-audio-session script
+  * Fix reject transfer 
+
+ -- Adrian Georgescu <support@ag-projects.com>  Tue, 19 May 2026 08:25:12 +0200
+
 sipclients (5.4.1) unstable; urgency=medium
 
   * Added more TLS certificate issuers
