@@ -77,6 +77,10 @@ from sipsimple.configuration.datatypes import VideoResolution
 from sipsimple.configuration.settings import SIPSimpleSettings
 from sipsimple.core import Route
 from sipsimple.core import CORE_REVISION, PJ_VERSION, PJ_SVN_REVISION
+try:
+    from sipsimple.core import CORE_BUILD
+except ImportError:
+    CORE_BUILD = 0
 from sipsimple import __version__ as version
 from sipsimple.lookup import DNSLookup
 from sipsimple.payloads.iscomposing import IsComposingMessage, IsComposingDocument
@@ -1957,7 +1961,7 @@ class SIPSessionApplication(SIPApplication):
             ui.stop()
             self.stopped_event.set()
         else:
-            show_notice("SDK version %s, core version %s, PJSIP version %s (%s)" % (version, CORE_REVISION, PJ_VERSION.decode(), PJ_SVN_REVISION))  
+            show_notice("SDK version %s, core version %s.%s, PJSIP version %s (rev %s)" % (version, CORE_REVISION, CORE_BUILD, PJ_VERSION.decode(), PJ_SVN_REVISION))  
 
     # notification handlers
     #
@@ -2842,7 +2846,20 @@ class SIPSessionApplication(SIPApplication):
         # of a call.
         session = notification.sender
         cid = _sip_call_id(session)
-        prefix = '[zrtp] call_id=%s' % cid
+        # Protocol version (1 or 2) and continuity_state ('first-time' /
+        # 'verified' / 'mismatch' / 'one-sided-local' / 'one-sided-peer')
+        # are supplied by the SDK on every state notification — surface
+        # them so the log trail tells you which wire version was actually
+        # negotiated and whether retained-secret continuity was used.
+        protocol_version = getattr(data, 'protocol_version', None)
+        continuity = getattr(data, 'continuity_state', None)
+        meta_bits = []
+        if protocol_version is not None:
+            meta_bits.append('v%d' % protocol_version)
+        if continuity:
+            meta_bits.append('continuity=%s' % continuity)
+        meta = (' [' + ' '.join(meta_bits) + ']') if meta_bits else ''
+        prefix = '[zrtp] call_id=%s%s' % (cid, meta)
         if state == 'key-agreed':
             sas = getattr(data, 'sas', None)
             if sas:
@@ -2859,6 +2876,10 @@ class SIPSessionApplication(SIPApplication):
                             % (prefix, install_desc))
             else:
                 show_notice('%s media now end-to-end encrypted (AES-128-GCM)' % prefix)
+            if continuity == 'mismatch':
+                show_notice('%s WARNING — retained-secret mismatch; could be a peer reinstall OR a man-in-the-middle. Verify the SAS in person before continuing.' % prefix)
+            elif continuity in ('one-sided-local', 'one-sided-peer'):
+                show_notice('%s note — only one side held a retained secret (%s); re-verify SAS to re-bind.' % (prefix, continuity))
             if failed:
                 fail_desc = ', '.join('%s(%s,%s)' % (typ, codec, reason)
                                        for (typ, codec, reason) in failed)
@@ -2872,6 +2893,11 @@ class SIPSessionApplication(SIPApplication):
         elif state == 'probing':
             role = getattr(data, 'role', '?')
             show_notice('%s handshake started (role=%s)' % (prefix, role))
+        # Sylk-ZRTP state transitions move us between "encrypted/not
+        # verified" and "encrypted/verified (Sylk-ZRTP v2)" — refresh
+        # the prompt so the label tracks reality.
+        if state in ('key-agreed', 'key-active', 'failed'):
+            self._update_prompt()
 
     def _NH_SIPSessionDidEnd(self, notification):
         notification_center = NotificationCenter()
@@ -4232,13 +4258,111 @@ class SIPSessionApplication(SIPApplication):
             return
 
         audio_stream = next((stream for stream in self.active_session.streams if stream.type == 'audio'), None)
-        
+
         if audio_stream is None:
             show_notice("ZRTP functions can be used only during active audio sessions")
             return
-            
-        audio_stream.encryption.zrtp.verified = not audio_stream.encryption.zrtp.verified
-        show_notice("ZRTP peer is now %s" % ('verified' if audio_stream.encryption.zrtp.verified  else 'not verified'))
+
+        # Two possible encryption layers: RFC 6189 ZRTP (touched via
+        # audio_stream.encryption.zrtp) and Sylk-flavoured ZRTP-over-
+        # SIP-MESSAGE (the SylkZRTPSession attached to the session as
+        # _sylk_zrtp). Reaching for audio_stream.encryption.zrtp when
+        # only Sylk-ZRTP is active raises "ZRTP options have not been
+        # initialized" — check which is in play before deciding what to
+        # toggle.
+        sylk_session = getattr(self.active_session, '_sylk_zrtp', None)
+        sylk_active = sylk_session is not None and getattr(sylk_session, 'state', None) in ('key-agreed', 'key-active')
+        if sylk_active:
+            ok = False
+            try:
+                ok = bool(sylk_session.confirm_sas_and_seed_rs1())
+            except Exception as e:
+                show_notice("Sylk-ZRTP verify failed: %s" % e)
+                return
+            if ok:
+                show_notice("Sylk-ZRTP SAS confirmed — rs1 seeded for %s (continuity will engage on the next call)"
+                            % getattr(sylk_session, 'peer_aor', '?'))
+            else:
+                show_notice("Sylk-ZRTP verify: rs1 not seeded (peer_aor or shared secret missing)")
+            self._update_prompt()
+            return
+
+        # Fallback to RFC 6189 ZRTP toggle.
+        try:
+            audio_stream.encryption.zrtp.verified = not audio_stream.encryption.zrtp.verified
+            show_notice("ZRTP peer is now %s" % ('verified' if audio_stream.encryption.zrtp.verified else 'not verified'))
+        except RuntimeError as e:
+            show_notice("ZRTP not active on this call (%s)" % e)
+
+    def _CH_zrtp_pgp_keys(self, *args):
+        """Plumb PGP keys into the active call's Sylk-ZRTP session for v3
+        signed-handshake testing. Usage:
+
+            /zrtp_pgp_keys <local_priv.asc> <peer_pub.asc>
+
+        Both args are filesystem paths to armored OpenPGP key blocks.
+        Either may be '-' to leave the corresponding slot unchanged.
+        Keys take effect for SUBSEQUENT probe / accept payloads on this
+        call (the first probe/accept may have already fired without
+        sig). For full v3 protection on call setup, applications should
+        invoke session._sylk_zrtp.set_signing_keys(...) at session
+        creation time before start_probe runs."""
+        if self.active_session is None:
+            show_notice("/zrtp_pgp_keys requires an active session")
+            return
+        sylk_session = getattr(self.active_session, '_sylk_zrtp', None)
+        if sylk_session is None:
+            show_notice("/zrtp_pgp_keys: no Sylk-ZRTP session on this call")
+            return
+        if len(args) < 2:
+            show_notice("Usage: /zrtp_pgp_keys <local_priv.asc> <peer_pub.asc>")
+            return
+        local_path, peer_path = args[0], args[1]
+        local_blob = peer_blob = None
+        try:
+            if local_path and local_path != '-':
+                with open(os.path.expanduser(local_path), 'r') as fh:
+                    local_blob = fh.read()
+            if peer_path and peer_path != '-':
+                with open(os.path.expanduser(peer_path), 'r') as fh:
+                    peer_blob = fh.read()
+        except Exception as e:
+            show_notice("/zrtp_pgp_keys read failed: %s" % e)
+            return
+        try:
+            sylk_session.set_signing_keys(local_blob, peer_blob)
+        except Exception as e:
+            show_notice("/zrtp_pgp_keys set_signing_keys failed: %s" % e)
+            return
+        show_notice("Sylk-ZRTP signing keys updated "
+                    "(local_priv=%s, peer_pub=%s)"
+                    % ('yes' if local_blob else 'unchanged',
+                       'yes' if peer_blob else 'unchanged'))
+
+    def _CH_zrtp_reset(self):
+        """Forget the Sylk-ZRTP retained secret (rs1) for the peer of the
+        currently active call. Use to re-bootstrap the v2 continuity
+        handshake from the first-time state (e.g. for testing). Does NOT
+        affect RFC 6189 ZRTP."""
+        if self.active_session is None:
+            show_notice("/zrtp_reset can be used only during an active session")
+            return
+        sylk_session = getattr(self.active_session, '_sylk_zrtp', None)
+        if sylk_session is None:
+            show_notice("/zrtp_reset: no Sylk-ZRTP session on this call")
+            return
+        peer_aor = getattr(sylk_session, 'peer_aor', None) or '?'
+        try:
+            ok = bool(sylk_session.clear_rs1())
+        except Exception as e:
+            show_notice("/zrtp_reset failed: %s" % e)
+            return
+        if ok:
+            show_notice("Sylk-ZRTP rs1 cleared for %s (this call still uses the agreed keys; the next call will start in continuity=first-time)"
+                        % peer_aor)
+        else:
+            show_notice("/zrtp_reset: no rs1 was stored for %s" % peer_aor)
+        self._update_prompt()
 
     def _CH_zrtp_name(self, *args):
         if self.active_session is None:
@@ -4398,6 +4522,8 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /record [on|off]: toggle/set audio recording (ctrl-x r)')
         lines.append('  /hold [on|off]: hold/unhold (ctrl-x SPACE)')
         lines.append('  /zrtp_verified: toggle verified flag for ZRTP peer (both parties must do it)')
+        lines.append('  /zrtp_reset: forget the Sylk-ZRTP retained secret (rs1) for this peer; next call re-bootstraps from continuity=first-time')
+        lines.append('  /zrtp_pgp_keys <local_priv.asc> <peer_pub.asc>: load PGP keys (armored) for v3 signed-handshake; use "-" to leave a slot unchanged')
         lines.append('  /zrtp_name name: set name for ZRTP peer')
         lines.append('  /otr: toggle OTR encryption for the chat stream')
         lines.append('  /otr_answer answer: Answer OTR verification question using SMP protocol')
@@ -4433,30 +4559,67 @@ class SIPSessionApplication(SIPApplication):
             chat_stream = next((stream for stream in session.streams if stream.type == 'chat'), None)
             audio_stream = next((stream for stream in session.streams if stream.type == 'audio'), None)
 
+            # Track whether every encryption layer reports verified so the
+            # prompt foreground can flip from red to green when the call
+            # is fully trusted. Starts True and gets cleared on any
+            # NOT verified / MISMATCH appended below.
+            all_verified = True
+
             if chat_stream and chat_stream.encryption.active:
-                info.append('Chat encrypted verified' if chat_stream.encryption.verified else 'Chat encrypted NOT verified')
+                if chat_stream.encryption.verified:
+                    info.append('Chat encrypted verified')
+                else:
+                    info.append('Chat encrypted NOT verified')
+                    all_verified = False
 
             if audio_stream and audio_stream.encryption.active:
-                zrtp = None
-                if audio_stream.encryption.type == 'ZRTP':
-                    try:
-                        zrtp = audio_stream.encryption.zrtp
-                    except RuntimeError:
-                        zrtp = None
-                if zrtp is not None:
-                    if zrtp.verified:
-                        if zrtp.peer_name:
-                            info.append('Audio encrypted verified with %s' % zrtp.peer_name)
+                # Sylk-flavoured ZRTP layers on top of SRTP/SDES, so the
+                # underlying audio_stream.encryption.type is 'SRTP/SDES'
+                # (not 'ZRTP') when our X25519-over-SIP-MESSAGE handshake
+                # is what's actually wrapping the media. Check the
+                # SylkZRTPSession first; only fall through to RFC 6189
+                # ZRTP when no Sylk-ZRTP session is in play.
+                sylk = getattr(session, '_sylk_zrtp', None)
+                sylk_state = getattr(sylk, 'state', None) if sylk is not None else None
+                if sylk is not None and sylk_state in ('key-agreed', 'key-active'):
+                    cs = getattr(sylk, 'continuity_state', 'first-time')
+                    pv = getattr(sylk, 'negotiated_version', 1)
+                    label = 'Sylk-ZRTP v%d' % pv
+                    if cs == 'verified':
+                        info.append('Audio encrypted verified (%s)' % label)
+                    elif cs == 'mismatch':
+                        info.append('Audio encrypted MISMATCH (%s)' % label)
+                        all_verified = False
+                    else:
+                        info.append('Audio encrypted NOT verified (%s)' % label)
+                        all_verified = False
+                else:
+                    zrtp = None
+                    if audio_stream.encryption.type == 'ZRTP':
+                        try:
+                            zrtp = audio_stream.encryption.zrtp
+                        except RuntimeError:
+                            zrtp = None
+                    if zrtp is not None:
+                        if zrtp.verified:
+                            if zrtp.peer_name:
+                                info.append('Audio encrypted verified with %s' % zrtp.peer_name)
+                            else:
+                                info.append('Audio encrypted verified')
                         else:
-                            info.append('Audio encrypted verified')
+                            info.append('Audio encrypted NOT verified')
+                            all_verified = False
                     else:
                         info.append('Audio encrypted NOT verified')
-                else:
-                    info.append('Audio encrypted NOT verified')
+                        all_verified = False
 
             if not info:
                 info = ['not encrypted']
-            ui.prompt = Prompt('%s to %s (%s)' % (streams, identity, ", ".join(info)), foreground='darkred')
+                all_verified = False
+            # Green when every encryption layer reports verified; red
+            # for any NOT verified / MISMATCH / unencrypted state.
+            prompt_fg = 'darkgreen' if all_verified else 'darkred'
+            ui.prompt = Prompt('%s to %s (%s)' % (streams, identity, ", ".join(info)), foreground=prompt_fg)
             return
 
         if self.message_session_to:
