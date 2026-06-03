@@ -1869,6 +1869,10 @@ class SIPSessionApplication(SIPApplication):
         # one entry per active video stream on the session.  Attached
         # in _NH_SIPSessionDidStart and torn down in _NH_SIPSessionDidEnd.
         self.video_windows = {}
+        # session -> subprocess.Popen of the per-call tcpdump process.
+        # Started in _NH_SIPSessionDidStart when --dump is given on
+        # the command line, terminated in _NH_SIPSessionDidEnd.
+        self.pcap_processes = {}
 
     def handle_notification(self, notification):
         alive_file = os.path.join(config_directory, 'last_notification')
@@ -2896,6 +2900,155 @@ class SIPSessionApplication(SIPApplication):
         for stream in notification.sender.proposed_streams:
             notification_center.add_observer(self, sender=stream)
 
+    def _start_pcap_capture(self, session):
+        """
+        Launch tcpdump for this session.  Filter is built from the
+        ports the session actually negotiated — SIP signaling (from
+        the engine) plus every RTP/RTCP port on the session's streams.
+        Saved to ~/.sipclient/logs/<call_id>/capture.pcap.
+
+        We use a port filter rather than `host <ip>` because the
+        signaling peer (registrar / SBC) is usually a different host
+        from the media peer; a port filter catches everything the
+        sipsimple process touches regardless of remote IP.
+        """
+        try:
+            call_id = _sip_call_id(session) or '?'
+            # Prefix the call-id with a YYYYmmdd-HHMMSS local-time
+            # stamp so directories sort chronologically and a single
+            # call-id replayed across multiple sessions doesn't clash.
+            stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            base = os.path.expanduser(
+                '~/.sipclient/logs/%s-%s' % (stamp, call_id)
+            )
+            makedirs(base)
+            pcap_path = os.path.join(base, 'capture.pcap')
+
+            ports = set()
+            # SIP signaling ports (best-effort across transports).
+            try:
+                eng = Engine()
+                for attr in ('transport_udp_port', 'transport_tcp_port', 'transport_tls_port'):
+                    p = getattr(eng, attr, 0)
+                    if p:
+                        ports.add(int(p))
+            except Exception:
+                pass
+            # Default well-known SIP ports as a safety net — covers
+            # the registrar side of the traffic when the engine ports
+            # are dynamic.
+            ports.update({5060, 5061})
+
+            # Per-stream RTP/RTCP ports.
+            for stream in (session.streams or []):
+                lport = getattr(stream, 'local_rtp_port', None)
+                rport = getattr(stream, 'remote_rtp_port', None)
+                for p in (lport, rport):
+                    if p:
+                        ports.add(int(p))
+                        ports.add(int(p) + 1)  # RTCP
+
+            if not ports:
+                show_notice('pcap: no ports learned for the session, skipping capture')
+                return
+
+            port_filter = ' or '.join('port %d' % p for p in sorted(ports))
+
+            # Try tcpdump without sudo first — works if the user has
+            # been granted BPF access (Wireshark's ChmodBPF launchd
+            # item, `sudo chmod o+r /dev/bpf*`, or a sudoers NOPASSWD
+            # rule for tcpdump itself).  Only fall back to `sudo -n`
+            # (non-interactive) if the direct invocation fails with
+            # a permission error — interactive sudo would block the
+            # whole sip-session3 reactor thread on the password prompt.
+            #
+            # On macOS interfaces "any" / "en0" need BPF read access.
+            iface_args = ['-i', 'any']
+            base_cmd = ['tcpdump'] + iface_args + ['-U', '-w', pcap_path, port_filter]
+
+            def _spawn(cmd):
+                try:
+                    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.PIPE)
+                except FileNotFoundError:
+                    return None
+
+            proc = _spawn(base_cmd)
+            if proc is None:
+                show_notice('pcap: tcpdump not found in PATH; install it to capture traffic')
+                return
+
+            # If tcpdump exits within 200ms it failed (permission denied,
+            # bad interface, ...).  Read stderr and decide whether to
+            # retry under `sudo -n`.
+            try:
+                proc.wait(timeout=0.2)
+                err = (proc.stderr.read().decode('utf-8', 'replace').strip()
+                       if proc.stderr else '')
+                if any(s in err.lower() for s in ('permission denied',
+                                                  'operation not permitted',
+                                                  'no permission')):
+                    sudo_proc = _spawn(['sudo', '-n'] + base_cmd)
+                    if sudo_proc is None:
+                        show_notice(
+                            'pcap: tcpdump failed (%s) and sudo is not '
+                            'available either' % err
+                        )
+                        return
+                    try:
+                        sudo_proc.wait(timeout=0.2)
+                        sudo_err = (sudo_proc.stderr.read()
+                                       .decode('utf-8', 'replace').strip()
+                                    if sudo_proc.stderr else '')
+                        show_notice(
+                            'pcap: capture did not start: %s. '
+                            'To enable: add a NOPASSWD sudoers rule for '
+                            'tcpdump, or `sudo chmod o+r /dev/bpf*`, or '
+                            'install Wireshark ChmodBPF.'
+                            % (sudo_err or err)
+                        )
+                        return
+                    except subprocess.TimeoutExpired:
+                        proc = sudo_proc
+                else:
+                    show_notice('pcap: capture did not start: %s' % (err or '<no stderr>'))
+                    return
+            except subprocess.TimeoutExpired:
+                pass
+
+            self.pcap_processes[id(session)] = proc
+            show_notice('pcap: capturing %d port(s) to %s' % (len(ports), pcap_path))
+        except Exception as exc:
+            show_notice('pcap: failed to start capture: %s' % exc)
+
+    def _stop_pcap_capture(self, session):
+        """
+        Terminate the tcpdump process for this session, if any.
+        Works whether tcpdump was launched directly or as a child
+        of `sudo` — SIGINT propagates through sudo, and we fall
+        through to SIGTERM if the child doesn't exit promptly.
+        """
+        proc = self.pcap_processes.pop(id(session), None)
+        if proc is None:
+            return
+        try:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(timeout=3.0)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def _NH_SIPSessionDidStart(self, notification):
         session = notification.sender
 
@@ -3074,6 +3227,9 @@ class SIPSessionApplication(SIPApplication):
         notification_center.discard_observer(self, sender=session)
         for stream in session.streams or session.proposed_streams or []:
             notification_center.discard_observer(self, sender=stream)
+
+        # Stop the per-call tcpdump (if --dump was active).
+        self._stop_pcap_capture(session)
 
         # Tear down any video windows associated with this session.
         # Close the FrameBufferVideoRenderer first (detaches the cb
@@ -4919,6 +5075,10 @@ if __name__ == '__main__':
     parser.add_option('-n', '--trace-notifications', action='store_true', dest='trace_notifications', default=False, help='Print all notifications (disabled by default).')
     parser.add_option('-S', '--disable-sound', action='store_true', dest='disable_sound', default=False, help='Disables initializing the sound card.')
     parser.add_option('-R', '--auto-reconnect', action='store_true', dest='auto_reconnect', default=False, help='Auto reconnect calls if disconnected by remote.')
+    parser.add_option('-v', '--video', action='store_true', dest='with_video', default=False, help='Place the outgoing call with a video stream (only meaningful when a target SIP URI is given on the command line). Audio only by default; pass --chat to additionally include an MSRP chat stream at call start.')
+    parser.add_option('--chat', action='store_true', dest='with_chat', default=False, help='Include an MSRP chat stream in the initial INVITE. Without this flag the call starts audio-only (no MSRP media is present at call start); chat can still be added later via re-INVITE.')
+    parser.add_option('--no-chat', action='store_true', dest='no_chat', default=False, help='Deprecated/no-op: audio-only (no chat) is now the default. Kept for backwards compatibility.')
+    parser.add_option('--dump', action='store_true', dest='dump', default=False, help='Capture pcap of signaling + audio + video traffic for every active session into ~/.sipclient/logs/<call-id>/capture.pcap (uses tcpdump; macOS prompts for sudo on first start).')
     parser.set_default('auto_answer_interval', None)
     parser.add_option('--auto-answer', action='callback', callback=parse_handle_call_option, callback_args=('auto_answer_interval',), help='Interval after which to answer an incoming session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (accept the session as soon as it starts ringing).', metavar='[INTERVAL]')
     parser.set_default('auto_hangup_interval', None)
