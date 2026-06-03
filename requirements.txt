@@ -1,1 +1,6 @@
 pgpy
+# Video display window for sip-session3 — see VideoWindow integration
+# below.  Both are pure-python on the wire (numpy ships precompiled
+# wheels for darwin/arm64; Pillow ditto).
+numpy
+pillow

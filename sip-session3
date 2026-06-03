@@ -7,6 +7,7 @@ import re
 import signal
 import json
 import sys
+import traceback
 import urllib.request, urllib.parse, urllib.error
 import random
 import requests
@@ -88,6 +89,8 @@ from sipsimple.session import IllegalStateError, Session
 from sipsimple.streams import MediaStreamRegistry
 from sipsimple.streams.msrp.filetransfer import FileSelector
 from sipsimple.streams.msrp.chat import CPIMPayload, CPIMHeader, CPIMNamespace, SimplePayload, CPIMParserError, ChatIdentity, OTREncryption
+from sipsimple.core import FrameBufferVideoRenderer
+from sipclient.video import VideoWindow
 from sipsimple.payloads.imdn import IMDNDocument, DisplayNotification, DeliveryNotification
 
 from sipsimple.storage import FileStorage
@@ -160,12 +163,15 @@ class BonjourNeighbour(object):
 
 
 class RTPStatisticsThread(Thread):
-    INTERVAL = 10  # seconds between samples
+    INTERVAL = 2   # seconds between samples (also drives the video HUD refresh)
 
-    def __init__(self):
+    def __init__(self, console=True):
         Thread.__init__(self)
         self.setDaemon(True)
         self.stopped = False
+        # When False, suppress console RTP-stats prints; HUD pushes
+        # still happen.  `/rtp on/off` flips this.
+        self.console = console
         # per-stream byte counters for bandwidth deltas, keyed by id(stream)
         self._last_bytes = {}
 
@@ -237,12 +243,32 @@ class RTPStatisticsThread(Thread):
                                 rx_kbps, tx_kbps))
                     if stream.type == 'video':
                         base += ', resolution=%s' % self._video_resolution(stream)
+                        # Push the same numbers to the on-screen video
+                        # HUD if a window is open for this session.
+                        try:
+                            for window, _renderer in application.video_windows.get(id(session), []):
+                                codec_name = getattr(stream, 'codec', None) or '?'
+                                window.update_stats({
+                                    'codec': codec_name,
+                                    'rtt_ms': stats['rtt']['avg'] / 1000.0,
+                                    'packet_loss': loss / 100.0,
+                                    'bandwidth_kbps': rx_kbps + tx_kbps,
+                                    'resolution': self._video_resolution(stream),
+                                    'extra': {
+                                        'rx_kbps': '%.0f' % rx_kbps,
+                                        'tx_kbps': '%.0f' % tx_kbps,
+                                    },
+                                })
+                        except Exception as exc:
+                            # HUD push is best-effort; never let it
+                            # take down the stats thread.
+                            pass
                     lines.append(base)
                 # forget counters for streams that no longer exist
                 for key in list(self._last_bytes):
                     if key not in seen:
                         del self._last_bytes[key]
-                if lines:
+                if lines and self.console:
                     reactor.callFromThread(show_notice, lines)
             sleep(self.INTERVAL)
 
@@ -1839,6 +1865,10 @@ class SIPSessionApplication(SIPApplication):
         self.last_failure_reason = None
         self.enable_playback = False
         self.auto_record = False
+        # session -> [(VideoWindow, FrameBufferVideoRenderer), ...]
+        # one entry per active video stream on the session.  Attached
+        # in _NH_SIPSessionDidStart and torn down in _NH_SIPSessionDidEnd.
+        self.video_windows = {}
 
     def handle_notification(self, notification):
         alive_file = os.path.join(config_directory, 'last_notification')
@@ -2045,6 +2075,55 @@ class SIPSessionApplication(SIPApplication):
             reason = reason + " verify_server=%s" % notification.data.credentials.verify_peer
         show_notice('%s media stream failed: %s\n' % (notification.sender.type, reason))
 
+    def _zrtp_signing_keys_provider(self, session, role):
+        """Provider registered with python-sipsimple's SylkZRTPSession at
+        application start. Called once per ZRTP session construction so
+        v3 signed-handshake automatically uses the same PGP material we
+        already cache for chat encryption — no /zrtp_pgp_keys command
+        needed per call.
+
+        Returns (local_priv_blob, peer_pub_blob) as armored strings,
+        either or both may be None. Exceptions are swallowed; provider
+        errors must never abort a call (degrades to v2 semantics).
+
+        Local private key: read from account.sms.private_key (file path
+        stamped in by /import_private_key on first set-up).
+
+        Peer public key: read from {self.keys_path}/<peer_aor>.pubkey,
+        the same file _NH_SIPSessionGotMessage writes when the peer (or
+        the Sylk server's lookup endpoint) sends us their public key.
+        """
+        local_blob = None
+        try:
+            account = getattr(session, 'account', None)
+            sms = getattr(account, 'sms', None) if account is not None else None
+            priv_path = getattr(sms, 'private_key', None) if sms is not None else None
+            if priv_path and os.path.exists(priv_path):
+                with open(priv_path, 'r') as fd:
+                    local_blob = fd.read()
+        except Exception as e:
+            log.warning('[sylk-zrtp] keys provider: local-priv read failed: %s' % e)
+
+        peer_blob = None
+        try:
+            # Build the canonical 'user@host' lookup key from
+            # session.remote_identity.uri — same shape python-sipsimple's
+            # internal _peer_aor_from_session uses for storage keying.
+            ri = getattr(session, 'remote_identity', None)
+            uri = getattr(ri, 'uri', None) if ri is not None else None
+            if uri is not None:
+                user = uri.user.decode() if isinstance(uri.user, bytes) else uri.user
+                host = uri.host.decode() if isinstance(uri.host, bytes) else uri.host
+                peer_aor = '%s@%s' % (user, host)
+                pub_path = '%s/%s.pubkey' % (self.keys_path, peer_aor)
+                if os.path.exists(pub_path):
+                    with open(pub_path, 'r') as fd:
+                        peer_blob = fd.read()
+        except Exception as e:
+            log.warning('[sylk-zrtp] keys provider: peer-pub read failed: %s' % e)
+
+        return (local_blob, peer_blob)
+
     def _NH_SIPApplicationDidStart(self, notification):
         # Wire automatic v3 PGP key plumbing into python-sipsimple's
         # SylkZRTPSession. Without this hook, set_signing_keys() only
@@ -2096,7 +2175,28 @@ class SIPSessionApplication(SIPApplication):
                 self.send_outgoing_file(self.target, self.filepath)
                 self.must_exit = True
             else:
-                call_initializer = OutgoingCallInitializer(self.account, self.target, audio=True, chat=True, video=True, auto_reconnect=self.options.auto_reconnect)
+                # -v / --video toggles the video stream on the
+                # outgoing call.  Audio is always on.
+                #
+                # Chat stream policy:
+                #   * default      → audio only, NO MSRP/chat in the
+                #                    initial INVITE (chat can still be
+                #                    added later via re-INVITE/proposal).
+                #   * --chat       → force include chat at call start.
+                #   * --no-chat    → explicit form of the default
+                #                    (kept for backwards compatibility).
+                #   * --video      → audio + video, still no chat unless
+                #                    --chat is given.
+                want_video = bool(getattr(self.options, 'with_video', False))
+                forced_chat = bool(getattr(self.options, 'with_chat', False))
+                want_chat = forced_chat
+                if want_video:
+                    self.enable_video = True
+                call_initializer = OutgoingCallInitializer(
+                    self.account, self.target,
+                    audio=True, chat=want_chat, video=want_video,
+                    auto_reconnect=self.options.auto_reconnect,
+                )
                 call_initializer.start()
 
     def poll_playback_directory(self):
@@ -2725,7 +2825,14 @@ class SIPSessionApplication(SIPApplication):
                             if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                                 message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
                         else:
-                            content = bytes(decrypted_message.message, 'latin1').decode()
+                            msg = decrypted_message.message
+                            if isinstance(msg, (bytes, bytearray)):
+                                content = msg.decode('utf-8', errors='replace')
+                            else:
+                                try:
+                                    content = bytes(msg, 'latin1').decode('utf-8')
+                                except (UnicodeEncodeError, UnicodeDecodeError):
+                                    content = msg
                             show_notice("%s PGP encrypted text from %s: %s" % (datetime.now().replace(microsecond=0), identity, content))
                             if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                                 message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
@@ -2797,6 +2904,42 @@ class SIPSessionApplication(SIPApplication):
             self.active_session.hold()
         self.active_session = session
         self.message_session_to = None
+
+        # --dump: per-call pcap into ~/.sipclient/logs/<call-id>/
+        if getattr(self.options, 'dump', False):
+            self._start_pcap_capture(session)
+
+        # Auto-spawn an on-screen video window for every video stream.
+        # The user can still close it with `/video close` and reopen
+        # with `/video open` (see _CH_video).
+        has_video = False
+        for stream in (session.streams or []):
+            if stream.type != 'video':
+                continue
+            has_video = True
+            try:
+                identity = str(session.remote_identity.uri)
+                window = VideoWindow(title='Video — %s' % identity)
+                renderer = FrameBufferVideoRenderer(window.frame_handler)
+                renderer.producer = stream.producer
+                self.video_windows.setdefault(id(session), []).append(
+                    (window, renderer)
+                )
+                window.start()
+                show_notice(
+                    'Video window opened for %s — `/video close` to hide' % identity,
+                    bold=False,
+                )
+            except Exception as exc:
+                show_notice('Could not open video window: %s' % exc)
+        # If there's a video stream we need the RTP stats thread
+        # running so the HUD has numbers — independent of whether
+        # the user has toggled console RTP printing with `/rtp`.
+        if has_video and self.rtp_statistics is None:
+            # Auto-started for HUD: console output stays off until
+            # the user runs `/rtp on`.
+            self.rtp_statistics = RTPStatisticsThread(console=False)
+            self.rtp_statistics.start()
 
         # If the call has no chat stream, automatically start a message
         # session to the same contact so typed text becomes SIP MESSAGEs
@@ -2931,6 +3074,19 @@ class SIPSessionApplication(SIPApplication):
         notification_center.discard_observer(self, sender=session)
         for stream in session.streams or session.proposed_streams or []:
             notification_center.discard_observer(self, sender=stream)
+
+        # Tear down any video windows associated with this session.
+        # Close the FrameBufferVideoRenderer first (detaches the cb
+        # so no more frames hit the queue) then close the window.
+        for window, renderer in self.video_windows.pop(id(session), []):
+            try:
+                renderer.close()
+            except Exception:
+                pass
+            try:
+                window.close()
+            except Exception:
+                pass
 
         ui = UI()
         ui.status = None
@@ -3337,7 +3493,81 @@ class SIPSessionApplication(SIPApplication):
         call_initializer = OutgoingCallInitializer(self.account, target, audio=True, chat=chat_option=='+chat')
         call_initializer.start()
 
-    def _CH_video(self, target, chat_option=None):
+    def _CH_video(self, target=None, chat_option=None):
+        # In-call window control: `/video open` and `/video close`
+        # spawn / tear down the on-screen video display for the
+        # currently active session.  Falls through to the original
+        # "start a new outgoing video call" behaviour when called
+        # with a SIP URI.
+        if target in ('open', 'close'):
+            session = self.active_session
+            if session is None:
+                show_notice('No active session.  Place or accept a call first.')
+                return
+            video_streams = [s for s in (session.streams or []) if s.type == 'video']
+            if not video_streams:
+                show_notice('No video stream on the active session.')
+                return
+            session_key = id(session)
+            if target == 'open':
+                # Drop dead entries first — the user may have closed
+                # the previous window with the mouse, in which case
+                # the subprocess is already gone but the bookkeeping
+                # still has the stale (window, renderer) pair.
+                existing = self.video_windows.get(session_key, [])
+                live = [(w, r) for (w, r) in existing if w.is_alive()]
+                for window, renderer in existing:
+                    if window.is_alive():
+                        continue
+                    try:
+                        renderer.close()
+                    except Exception:
+                        pass
+                    try:
+                        window.close()
+                    except Exception:
+                        pass
+                if live:
+                    self.video_windows[session_key] = live
+                    show_notice('Video window already open.')
+                    return
+                # All previous windows are dead (or none existed); discard
+                # the stale entry and spawn fresh ones below.
+                self.video_windows.pop(session_key, None)
+                identity = str(session.remote_identity.uri)
+                opened = 0
+                for stream in video_streams:
+                    try:
+                        window = VideoWindow(title='Video — %s' % identity)
+                        renderer = FrameBufferVideoRenderer(window.frame_handler)
+                        renderer.producer = stream.producer
+                        self.video_windows.setdefault(session_key, []).append(
+                            (window, renderer)
+                        )
+                        window.start()
+                        opened += 1
+                    except Exception as exc:
+                        show_notice('Could not open video window: %s' % exc)
+                if opened:
+                    show_notice('Opened %d video window(s) for %s' % (opened, identity))
+            else:  # 'close'
+                entries = self.video_windows.pop(session_key, [])
+                if not entries:
+                    show_notice('No video window open for the active session.')
+                    return
+                for window, renderer in entries:
+                    try:
+                        renderer.close()
+                    except Exception:
+                        pass
+                    try:
+                        window.close()
+                    except Exception:
+                        pass
+                show_notice('Closed %d video window(s).' % len(entries))
+            return
+
+        # Otherwise: original behaviour — start an outgoing video call.
         if chat_option and chat_option != '+chat':
             raise TypeError()
         if self.outgoing_session is not None:
