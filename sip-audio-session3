@@ -999,7 +999,6 @@ class SIPAudioApplication(SIPApplication):
         if session.remote_identity.display_name:
             remote_identity = '"%s" <%s>' % (session.remote_identity.display_name, remote_identity)
         self.output.put("Starting %s session from %s to %s via %s...\n" % ('video' if self.enable_video else 'audio', local_identity, remote_identity, session.route))
-        self.started_sessions.append(session)
         self.outgoing_session = session
 
     def _NH_SIPSessionGotRingIndication(self, notification):
