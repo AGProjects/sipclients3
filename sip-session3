@@ -3922,24 +3922,27 @@ class SIPSessionApplication(SIPApplication):
         settings.save()
 
     def _CH_rtp(self, state='toggle'):
+        # `/rtp` now controls only CONSOLE output of stats.  The
+        # background thread itself is auto-started whenever a video
+        # call is active (to feed the HUD) and stays running for
+        # the call's lifetime regardless of this toggle.
         if state == 'toggle':
-            new_state = self.rtp_statistics is None
+            new_console = not (self.rtp_statistics is not None and self.rtp_statistics.console)
         elif state == 'on':
-            new_state = True
+            new_console = True
         elif state == 'off':
-            new_state = False
+            new_console = False
         else:
             raise TypeError()
-        if (self.rtp_statistics and new_state) or (not self.rtp_statistics and not new_state):
-            return
-        if new_state:
-            self.rtp_statistics = RTPStatisticsThread()
+        if self.rtp_statistics is None:
+            self.rtp_statistics = RTPStatisticsThread(console=new_console)
             self.rtp_statistics.start()
+        else:
+            self.rtp_statistics.console = new_console
+        if new_console:
             show_notice('Output of RTP statistics and ICE negotiation results on console is now activated')
         else:
-            self.rtp_statistics.stop()
-            self.rtp_statistics = None
-            show_notice('Output of RTP statistics and ICE negotiation results on console is now dectivated')
+            show_notice('Output of RTP statistics and ICE negotiation results on console is now deactivated')
 
     def _CH_mute(self, state='toggle'):
         if state == 'toggle':
