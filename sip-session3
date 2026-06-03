@@ -4384,8 +4384,9 @@ class SIPSessionApplication(SIPApplication):
                 return_data['error'] = "Enrollment server error code %s" % r.status_code
 
         except Exception as e:
-            return_data['error'] = "Enrollment exception: %s" % str(e)
-        
+            return_data['error'] = "Enrollment exception: %s: %s\n%s" % (
+                type(e).__name__, e, traceback.format_exc())
+
         return return_data
 
     def _CH_otr(self):
