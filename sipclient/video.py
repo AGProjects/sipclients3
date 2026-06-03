@@ -117,6 +117,15 @@ class VideoWindow:
                     pass
             self._proc = None
 
+    def is_alive(self) -> bool:
+        """
+        True if the display subprocess is still running.  Returns
+        False once the user closes the window with the mouse / the
+        WM kills it, so callers can detect "gone" without trying to
+        push another frame first.
+        """
+        return self._proc is not None and self._proc.poll() is None
+
     def frame_handler(self, frame) -> None:
         """
         Pass as the frame_handler argument to

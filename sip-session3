@@ -4909,6 +4909,8 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /call {user[@domain]} [+video]: call the specified user using audio and optionally video')
         lines.append('  /audio {user[@domain]} [+chat]: call the specified user using audio and possibly chat')
         lines.append('  /video {user[@domain]} [+chat]: call the specified user using audio and video, and possibly chat')
+        lines.append('  /video open: open an on-screen window showing the remote video of the active session')
+        lines.append('  /video close: close the video display window for the active session')
         lines.append('  /chat {user[@domain]} [+audio]: call the specified user using chat and possibly audio')
         lines.append('  /conf {room}: join conference room using chat and audio')
         lines.append('  /[message | m] {user[@domain]}: start a message session')
