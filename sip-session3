@@ -2046,6 +2046,14 @@ class SIPSessionApplication(SIPApplication):
         show_notice('%s media stream failed: %s\n' % (notification.sender.type, reason))
 
     def _NH_SIPApplicationDidStart(self, notification):
+        # Wire automatic v3 PGP key plumbing into python-sipsimple's
+        # SylkZRTPSession. Without this hook, set_signing_keys() only
+        # ran via the manual /zrtp_pgp_keys command, so every call
+        # logged the "peer sent v3 sig but no peer_pub_key plumbed in"
+        # warning and v3 verify was effectively a no-op.
+        from sipsimple.streams.rtp.sylk_zrtp import register_signing_keys_provider
+        register_signing_keys_provider(self._zrtp_signing_keys_provider)
+
         settings = SIPSimpleSettings()
         engine = Engine()
         # Force outbound video to 480p (640x480) regardless of saved settings.
@@ -2866,6 +2874,24 @@ class SIPSessionApplication(SIPApplication):
                 show_notice('%s key agreed — SAS: %s' % (prefix, sas))
             else:
                 show_notice('%s key agreed' % prefix)
+            # Device-id breadcrumb. Symmetric with sylk-mobile's
+            # SAS-verification dialog "this device / peer" lines and
+            # python-sipsimple's "session created" log entry. Surfaces
+            # the +sip.instance / settings.instance_id we put on the
+            # wire AND the device_id the peer carried in its probe /
+            # accept payload, truncated to 16 chars so the prompt area
+            # stays readable. '<none>' on either field is the visible
+            # tell that per-device rs1 keying is degraded — peer is on
+            # an older stack or, for local, our settings.instance_id
+            # is empty. Shown at key-agreed (not probing) because
+            # callees skip the probing state and on the caller side
+            # the peer's device_id isn't yet known when probing fires.
+            sylk = getattr(session, '_sylk_zrtp', None)
+            if sylk is not None:
+                local_did = (getattr(sylk, 'local_device_id', None) or '<none>')[:16]
+                peer_did = (getattr(sylk, 'peer_device_id', None) or '<none>')[:16]
+                show_notice('%s     this device: %s · peer: %s'
+                            % (prefix, local_did, peer_did))
         elif state == 'key-active':
             installed = getattr(data, 'installed_streams', None) or []
             failed = getattr(data, 'failed_streams', None) or []
