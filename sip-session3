@@ -682,14 +682,24 @@ class MessageSession(object):
         content = IMDNDocument.create(message_id=imdn_id, datetime=imdn_timestamp, recipient_uri=recipient, notification=notification)
         self.send_message(content.decode(), content_type=IMDNDocument.content_type)
             
-    @run_in_green_thread           
+    @run_in_green_thread
     def _send_message(self, message):
         if not self.routes:
             return
 
+        # Guard: drop messages whose content was never populated (Null sentinel
+        # from application.python, plain None, or empty bytes/str).  Without
+        # this, Python 3.13's email.generator rejects Null at as_string() with
+        # `TypeError: string payload expected: NullType` and the engine traceback
+        # leaks out as a Twisted unhandled error.  The upstream path that lets
+        # Null reach here is usually an OTR / PGP encryption branch that
+        # silently no-op'd and left message.content un-initialised.
+        if message.content is Null or message.content is None or not message.content:
+            return
+
         if not self.route:
             self.route = self.routes.pop(0)
-            
+
         identity = str(self.account.uri)
 
         if self.account.display_name:
@@ -706,7 +716,12 @@ class MessageSession(object):
         if not isinstance(message, OTRInternalMessage):
             if message.content_type not in (IsComposingDocument.content_type, IMDNDocument.content_type):
                 try:
-                    message.content = self.encryption.otr_session.handle_output(message.content, message.content_type)
+                    otr_out = self.encryption.otr_session.handle_output(message.content, message.content_type)
+                    # handle_output() can return Null when OTR is not active
+                    # and silently no-op'd; in that case keep the original
+                    # plaintext rather than overwriting with the sentinel.
+                    if otr_out is not Null and otr_out is not None:
+                        message.content = otr_out
                 except OTRError as e:
                     if 'has ended the private conversation' in str(e):
                         show_notice('Encryption has been disabled by remote party, please resend the message again')
