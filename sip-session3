@@ -1,5 +1,221 @@
 #!/usr/bin/env python3
 
+# Work around a Python 3.11 ssl.SSLContext.verify_mode recursion bug seen on
+# some installs (the Python-level setter calls
+# super(SSLContext, SSLContext).verify_mode.__set__(self, value), which on
+# affected environments resolves back to itself and recurses until
+# RecursionError). Capture the underlying C data descriptor from
+# _ssl._SSLContext early, before any other import has a chance to clobber it,
+# then expose a helper that installs a non-recursive descriptor on
+# ssl.SSLContext on demand (a one-shot probe at startup misses the bug
+# because the corrupted state is introduced by a later import, so we patch
+# right before each network call instead).
+def _make_safe_verify_mode_descriptor():
+    try:
+        import ssl
+        import _ssl
+        base = _ssl._SSLContext.__dict__.get('verify_mode')
+        if base is None:
+            return None
+        cert_none = ssl.CERT_NONE
+
+        class _SafeVerifyMode:
+            def __get__(self, instance, owner=None):
+                if instance is None:
+                    return self
+                return base.__get__(instance, owner)
+
+            def __set__(self, instance, value):
+                if value == cert_none and instance.check_hostname:
+                    raise ValueError(
+                        "Cannot set verify_mode to CERT_NONE when "
+                        "check_hostname is enabled.")
+                base.__set__(instance, value)
+
+        return _SafeVerifyMode()
+    except Exception:
+        return None
+
+_SAFE_VERIFY_MODE = _make_safe_verify_mode_descriptor()
+
+
+# Capture stdlib references for ssl as early as possible, before anything
+# else has a chance to rebind them (e.g. gevent.monkey.patch_all). On affected
+# installs gevent rebinds ssl.SSLContext/SSLSocket to its own subclasses but
+# the rebound names are still referenced from stdlib ssl.py's internals
+# (super(SSLContext, SSLContext) etc.), which then resolves wrong and either
+# recurses (verify_mode) or raises TypeError (SSLSocket._create).
+def _capture_stdlib_ssl():
+    try:
+        import ssl as _stdlib_ssl
+    except Exception:
+        return {}
+    captured = {}
+    for name in ('SSLContext', 'SSLSocket', 'SSLError', 'SSLObject',
+                 'wrap_socket', 'create_default_context'):
+        current = getattr(_stdlib_ssl, name, None)
+        if current is not None:
+            captured[name] = current
+    return captured
+
+_STDLIB_SSL_ORIGINALS = _capture_stdlib_ssl()
+
+
+def _get_true_stdlib_ssl_attrs():
+    """Return the most authoritative stdlib ssl originals we can find.
+
+    Prefers gevent.monkey.saved (which gevent populates when it monkey-
+    patches) over our own early capture (which may itself already be the
+    rebound version if a sitecustomize/.pth file ran gevent.monkey before
+    us)."""
+    result = dict(_STDLIB_SSL_ORIGINALS)
+    try:
+        import gevent.monkey as gm
+        saved = getattr(gm, 'saved', {})
+        ssl_saved = saved.get('ssl') or {}
+        for name, value in ssl_saved.items():
+            result[name] = value
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    # As a last resort, derive the stdlib SSLContext from any gevent subclass.
+    if 'SSLContext' in result:
+        ctx_cls = result['SSLContext']
+        # If it's still gevent's class, walk up the MRO to find the stdlib one.
+        if getattr(ctx_cls, '__module__', '') != 'ssl':
+            for base in getattr(ctx_cls, '__mro__', ())[1:]:
+                if getattr(base, '__module__', '') == 'ssl' and base.__name__ == 'SSLContext':
+                    result['SSLContext'] = base
+                    break
+    if 'SSLSocket' in result:
+        sock_cls = result['SSLSocket']
+        if getattr(sock_cls, '__module__', '') != 'ssl':
+            for base in getattr(sock_cls, '__mro__', ())[1:]:
+                if getattr(base, '__module__', '') == 'ssl' and base.__name__ == 'SSLSocket':
+                    result['SSLSocket'] = base
+                    break
+    return result
+
+
+def _restore_stdlib_ssl_for_request():
+    """Temporarily restore stdlib ssl/urllib3 references so requests can
+    perform an HTTPS handshake without tripping gevent half-patch bugs.
+    Returns a (callable, info) pair; the callable undoes the restoration."""
+    try:
+        import ssl
+    except Exception as e:
+        return (lambda: None), 'no ssl module: %s' % e
+
+    originals = _get_true_stdlib_ssl_attrs()
+    if not originals:
+        return (lambda: None), 'no stdlib originals captured'
+
+    ssl_backup = {}
+    changed = []
+    for name, original in originals.items():
+        current = getattr(ssl, name, None)
+        if current is not original:
+            ssl_backup[name] = current
+            try:
+                setattr(ssl, name, original)
+                changed.append(name)
+            except Exception:
+                pass
+
+    urllib3_backup = []
+    try:
+        import urllib3.util.ssl_ as u3ssl
+        for name in ('SSLContext', 'SSLError', 'SSLSocket'):
+            target = getattr(ssl, name, None)
+            current = getattr(u3ssl, name, None)
+            if target is not None and current is not target:
+                urllib3_backup.append((u3ssl, name, current))
+                try:
+                    setattr(u3ssl, name, target)
+                except Exception:
+                    pass
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    def restore():
+        for module, name, value in urllib3_backup:
+            try:
+                setattr(module, name, value)
+            except Exception:
+                pass
+        for name, value in ssl_backup.items():
+            try:
+                setattr(ssl, name, value)
+            except Exception:
+                pass
+
+    return restore, 'restored stdlib ssl attrs: %s' % changed
+
+def _ensure_sslcontext_verify_mode_safe():
+    """Re-install the safe verify_mode descriptor on every Python subclass of
+    _ssl._SSLContext, then probe it. Called right before any network I/O that
+    might trigger the recursive setter.
+
+    Walking subclasses is required because ssl.SSLContext may have been
+    replaced or further subclassed by a third-party library after import
+    time; the recursion happens in whichever class's __dict__ still holds
+    the broken Python property."""
+    if _SAFE_VERIFY_MODE is None:
+        return False, 'no base descriptor captured'
+    import ssl
+    import _ssl
+
+    def _walk(cls, seen):
+        if cls in seen:
+            return
+        seen.add(cls)
+        yield cls
+        try:
+            children = cls.__subclasses__()
+        except Exception:
+            children = []
+        for sub in children:
+            yield from _walk(sub, seen)
+
+    patched = []
+    seen = set()
+    for cls in _walk(_ssl._SSLContext, seen):
+        if cls is _ssl._SSLContext:
+            continue
+        existing = cls.__dict__.get('verify_mode')
+        if existing is _SAFE_VERIFY_MODE:
+            continue
+        if existing is None:
+            continue
+        # Only replace Python-level descriptors (e.g. the broken property);
+        # leave C-level slot descriptors alone.
+        if isinstance(existing, property) or (
+            type(existing).__module__ != 'builtins'
+            and type(existing).__name__ not in ('getset_descriptor', 'member_descriptor')
+        ):
+            try:
+                cls.verify_mode = _SAFE_VERIFY_MODE
+                patched.append(cls)
+            except Exception as e:
+                return False, 'failed to patch %s: %s' % (cls, e)
+
+    # Also make sure the currently-bound ssl.SSLContext has the safe one.
+    if ssl.SSLContext.__dict__.get('verify_mode') is not _SAFE_VERIFY_MODE:
+        try:
+            ssl.SSLContext.verify_mode = _SAFE_VERIFY_MODE
+            patched.append(ssl.SSLContext)
+        except Exception as e:
+            return False, 'failed to patch ssl.SSLContext: %s' % e
+
+    # Probe.
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return True, 'patched: %r' % patched
+
 import hashlib
 import glob
 import os
@@ -4340,8 +4556,55 @@ class SIPSessionApplication(SIPApplication):
 
         return_data = {}
 
+        # Run the HTTP POST on a real OS thread. The notification dispatcher
+        # runs us inside an eventlib greenlet with a small C stack, which
+        # makes deep call chains inside requests/urllib3/SSL surface as
+        # "RecursionError: maximum recursion depth exceeded".
+        url = settings.enrollment.url
+        post_result = {}
+
+        def _do_post():
+            restore_ssl = lambda: None
+            try:
+                ok, info = _ensure_sslcontext_verify_mode_safe()
+                post_result['ssl_patch'] = '%s (%s)' % (ok, info)
+                restore_ssl, restore_info = _restore_stdlib_ssl_for_request()
+                post_result['ssl_restore'] = restore_info
+                post_result['response'] = requests.post(url, timeout=10, data=post_data)
+            except BaseException as exc:
+                post_result['exception'] = exc
+                post_result['traceback'] = traceback.format_exc()
+            finally:
+                try:
+                    restore_ssl()
+                except Exception:
+                    pass
+
+        import threading
+        post_thread = threading.Thread(target=_do_post, name='enroll-http', daemon=True)
+        post_thread.start()
+        post_thread.join(timeout=15)
+
+        if post_thread.is_alive():
+            return_data['error'] = "Enrollment exception: request to %s timed out" % url
+            return return_data
+
+        if 'exception' in post_result:
+            exc = post_result['exception']
+            return_data['error'] = (
+                "Enrollment exception: %s: %s\n"
+                "[ssl patch: %s]\n"
+                "[ssl restore: %s]\n"
+                "%s" % (
+                    type(exc).__name__, exc,
+                    post_result.get('ssl_patch', '<not run>'),
+                    post_result.get('ssl_restore', '<not run>'),
+                    post_result.get('traceback', '')))
+            return return_data
+
+        r = post_result['response']
+
         try:
-            r = requests.post(settings.enrollment.url, timeout=5, data=post_data)
             settings = SIPSimpleSettings()
             show_notice("Enrollment request sent to %s" % settings.enrollment.url)
 
