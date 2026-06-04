@@ -1,3 +1,16 @@
+sipclients (5.5.0) trixie; urgency=medium
+
+  * Fix starting MSRP session without OTR installed
+  * Work around a Python 3.11 ssl.SSLContext.verify_mode
+  * Capture enrollment traceback
+  * Update rtp stats
+  * Added pcap recording
+  * Added video window
+  * Fix duplicate session
+  * Implement sylk-zrtp v3 
+
+ -- Adrian Georgescu <ag@ag-projects.com>  Thu, 04 Jun 2026 01:40:21 -0300
+
 sipclients (5.4.2) unstable; urgency=medium
 
   * Added video at start and re-invite for video calls
