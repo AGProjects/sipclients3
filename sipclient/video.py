@@ -21,10 +21,12 @@ pipe so the pjsip media worker is never blocked.
 
 Pixel format
 ------------
-On Darwin, FrameBufferVideoRenderer delivers ARGB byte order in
-memory — see deps/patches/2.17/42_pjmedia_argb_format.patch in
-python3-sipsimple.  Other platforms typically deliver BGRA; adapt
-the subprocess's color reorder if you port this elsewhere.
+FrameBufferVideoRenderer delivers ARGB byte order in memory on
+Darwin (see deps/patches/2.17/42_pjmedia_argb_format.patch in
+python3-sipsimple) and BGRA on Linux / other platforms.  The
+subprocess renderer (_video_window_proc) picks the R,G,B channels
+with a platform-aware index, so both layouts produce correct
+colours.
 """
 
 from __future__ import annotations
