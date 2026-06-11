@@ -2173,6 +2173,7 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidFail')
         notification_center.add_observer(self, name='RTPStreamICENegotiationDidSucceed')
         notification_center.add_observer(self, name='ChatStreamOTREncryptionStateChanged')
+        notification_center.add_observer(self, name='VideoStreamRemoteFormatDidChange')
         notification_center.add_observer(self, name='TLSTransportHasChanged')
         notification_center.add_observer(self, name='MediaStreamDidFail')
         notification_center.add_observer(self, name='AudioDevicesDidChange')
@@ -3355,6 +3356,34 @@ class SIPSessionApplication(SIPApplication):
             else:
                 timer = reactor.callLater(self.options.auto_hangup_interval, session.end)
                 self.hangup_timers[id(session)] = timer
+
+    def _NH_VideoStreamRemoteFormatDidChange(self, notification):
+        # The on-screen renderer's FrameBuffer port is created with the
+        # remote decoder's output format captured at attach time
+        # (FrameBufferVideoRenderer._initialize reads
+        # producer.producer_port.info.fmt — see _core.video.pxi).  When we
+        # attach the renderer in _NH_SIPSessionDidStart the decoded format
+        # is only known yet if a remote frame has already been decoded.
+        #
+        # For an *incoming* call the caller is usually already sending by
+        # the time the session starts, so the format is valid and video
+        # shows.  For an *outgoing* call SIPSessionDidStart fires the instant
+        # the 200 OK is processed — before any remote frame is decoded — so
+        # the renderer locks onto a placeholder format and never displays the
+        # real stream.  Re-binding the producer here (None forces a rebuild,
+        # since setting the same producer is a no-op) recreates the render
+        # port at the now-known size.  This also handles mid-call resolution
+        # changes.
+        stream = notification.sender
+        session = getattr(stream, 'session', None)
+        if session is None:
+            return
+        for window, renderer in self.video_windows.get(id(session), []):
+            try:
+                renderer.producer = None
+                renderer.producer = stream.producer
+            except Exception as exc:
+                show_notice('Could not refresh video window: %s' % exc)
 
     def _NH_SIPSessionWillEnd(self, notification):
         notification_center = NotificationCenter()
