@@ -461,12 +461,28 @@ class RTPStatisticsThread(Thread):
                         base += ', resolution=%s' % self._video_resolution(stream)
                         # Push the same numbers to the on-screen video
                         # HUD if a window is open for this session.
+                        # RTT is a path-level metric shared by every stream
+                        # of the call, but pjmedia's *video* RTCP RTT is
+                        # unreliable and usually stays 0 (the video RR
+                        # LSR/DLSR round-trip isn't computed).  The audio
+                        # stream's RTCP RTT is solid, so borrow it for the HUD
+                        # when the video figure is missing.  Falls back to the
+                        # video value (0) only if the call has no audio RTT.
+                        rtt_us = stats['rtt']['avg']
+                        if not rtt_us:
+                            for other in session.streams:
+                                if other.type != 'audio':
+                                    continue
+                                other_stats = other.statistics
+                                if other_stats and other_stats['rtt']['avg']:
+                                    rtt_us = other_stats['rtt']['avg']
+                                break
                         try:
                             for window, _renderer in application.video_windows.get(id(session), []):
                                 codec_name = getattr(stream, 'codec', None) or '?'
                                 window.update_stats({
                                     'codec': codec_name,
-                                    'rtt_ms': stats['rtt']['avg'] / 1000.0,
+                                    'rtt_ms': rtt_us / 1000.0,
                                     'packet_loss': loss / 100.0,
                                     'bandwidth_kbps': rx_kbps + tx_kbps,
                                     'resolution': self._video_resolution(stream),
@@ -1024,10 +1040,11 @@ except NameError:
 @implementer(IObserver)
 class OutgoingCallInitializer(object):
 
-    def __init__(self, account, target, audio=False, chat=False, video=False, play_file=None, auto_reconnect=False):
+    def __init__(self, account, target, audio=False, chat=False, video=False, play_file=None, auto_reconnect=False, load=False):
         self.account = account
         self.target = target
         self.auto_reconnect = auto_reconnect
+        self.load = load
         self.streams = []
         self.play_file = play_file
         self.playback_wave_player = None
@@ -1114,6 +1131,7 @@ class OutgoingCallInitializer(object):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
         session = Session(self.account)
+        session._load = self.load
         notification_center.add_observer(self, sender=session)
         # Log the SRTP key negotiation policy that will drive the outgoing
         # offer (opportunistic / sdes_optional / sdes_mandatory / zrtp /
@@ -1156,7 +1174,7 @@ class OutgoingCallInitializer(object):
         settings = SIPSimpleSettings()
         ui = UI()
         ringtone = settings.sounds.audio_outbound
-        if ringtone and self.wave_ringtone is None and not self.play_file:
+        if ringtone and self.wave_ringtone is None and not self.play_file and not self.load:
             self.wave_ringtone = WavePlayer(SIPApplication.voice_audio_mixer, ringtone.path.normalized, volume=ringtone.volume, loop_count=0, pause_time=2)
             SIPApplication.voice_audio_bridge.add(self.wave_ringtone)
             self.wave_ringtone.start()
@@ -3285,9 +3303,18 @@ class SIPSessionApplication(SIPApplication):
         session = notification.sender
 
         self.connected_sessions.append(session)
-        if self.active_session is not None:
-            self.active_session.hold()
-        self.active_session = session
+        if getattr(session, '_load', False):
+            # Load-test leg: keep every call active (never on hold) so all of
+            # them keep pushing audio through the conference mixer. Don't hold
+            # the current active session and don't steal active status; just
+            # start a looping tone so the mixer has real signal to work on.
+            if self.active_session is None:
+                self.active_session = session
+            self._load_start_audio(session)
+        else:
+            if self.active_session is not None:
+                self.active_session.hold()
+            self.active_session = session
         self.message_session_to = None
 
         # --dump: per-call pcap into ~/.sipclient/logs/<call-id>/
@@ -3488,6 +3515,15 @@ class SIPSessionApplication(SIPApplication):
         for stream in session.streams or session.proposed_streams or []:
             notification_center.discard_observer(self, sender=stream)
 
+        # Stop the looping load-test tone, if this was a /load leg.
+        player = getattr(session, '_load_tone_player', None)
+        if player is not None:
+            try:
+                player.stop()
+            except Exception:
+                pass
+            session._load_tone_player = None
+
         # Stop the per-call tcpdump (if --dump was active).
         self._stop_pcap_capture(session)
 
@@ -3548,6 +3584,9 @@ class SIPSessionApplication(SIPApplication):
 
         if session is self.outgoing_session:
             self.outgoing_session = None
+
+        # Move the mic/speakers to whichever load leg is active now.
+        self._load_route_audio()
 
         on_hold_streams = [stream for stream in chain(*(session.streams for session in self.connected_sessions)) if stream.on_hold]
         if not on_hold_streams and self.hold_tone is not None:
@@ -3859,11 +3898,35 @@ class SIPSessionApplication(SIPApplication):
         ui.status = None
 
     def _NH_SIPSessionGotConferenceInfo(self, notification):
+        # Every leg receives its own conference NOTIFY, so during a load test
+        # this would print once per leg. Only report the conference roster for
+        # the call you're actually on (the active session).
+        if notification.sender is not self.active_session:
+            return
         info = notification.data.conference_info
-        show_notice('Conference users: %s' % ", ".join(user.entity.split(":")[1] for user in info.users))
+
+        def _bare(entity):
+            return entity.split(':', 1)[1] if entity and ':' in entity else (entity or '')
+
+        lines = ['Conference users:']
+        for user in info.users:
+            aor = _bare(user.entity)
+            # Each user (AoR) can be joined from several devices; every
+            # endpoint carries its own instance id (its Contact URI).
+            try:
+                endpoints = list(user)
+            except TypeError:
+                endpoints = []
+            instances = [_bare(getattr(ep, 'entity', None)) for ep in endpoints]
+            instances = [i for i in instances if i]
+            if instances:
+                lines.append('  %s (%d device%s): %s' % (aor, len(instances), '' if len(instances) == 1 else 's', ', '.join(instances)))
+            else:
+                lines.append('  %s' % aor)
+        show_notice(lines)
         if info.conference_description.resources:
             for file in info.conference_description.resources.files:
-                show_notice('Conference shared file: %s (%s bytes)' % (file.name, file.size))    
+                show_notice('Conference shared file: %s (%s bytes)' % (file.name, file.size))
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
         show_notice(" ")
@@ -3908,6 +3971,226 @@ class SIPSessionApplication(SIPApplication):
             return
         call_initializer = OutgoingCallInitializer(self.account, target, audio=True, chat=chat_option=='+chat')
         call_initializer.start()
+
+    def _load_noise_file(self):
+        # Lazily synthesise 2 s of mono white noise (16 kHz / 16-bit) that the
+        # load legs loop into the mixer. Neutral hiss, moderate amplitude so it
+        # isn't piercing, but real non-zero signal so the audio-level sampler
+        # has something to measure on every stream. Cached after first use.
+        path = getattr(self, '_load_noise_path', None)
+        if path and os.path.exists(path):
+            return path
+        import wave, struct, random, tempfile
+        path = os.path.join(tempfile.gettempdir(), 'sip-session-load-noise.wav')
+        rate, duration, amp = 16000, 2.0, 7000
+        nframes = int(rate * duration)
+        rnd = random.Random(1)
+        frames = bytearray()
+        for _ in range(nframes):
+            frames += struct.pack('<h', rnd.randint(-amp, amp))
+        with wave.open(path, 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(bytes(frames))
+        self._load_noise_path = path
+        return path
+
+    def _load_route_audio(self):
+        # Wire your microphone + speakers (the local audio device) to the ACTIVE
+        # load leg only. Every other load leg stays a fully active RTP
+        # participant - so the server keeps mixing and audio-level-sampling all
+        # of them - but is disconnected from your mic/speakers, so you neither
+        # pump your mic into 30 legs at once nor hear the conference mixed back
+        # 30 times over. Talk on the active leg and the real participants hear
+        # you; /next moves the mic to another leg.
+        if not getattr(self, '_load_active', False):
+            return
+        for session in list(self.connected_sessions):
+            if not getattr(session, '_load', False):
+                continue
+            self._load_set_device(session, session is self.active_session)
+
+    def _load_set_device(self, session, connected):
+        audio_stream = next((s for s in (session.streams or []) if s.type == 'audio'), None)
+        if audio_stream is None:
+            return
+        device = getattr(audio_stream, 'device', None)
+        if device is None:
+            return
+        # Streams come up with the device already in their bridge.
+        cur = getattr(session, '_load_device_connected', True)
+        if connected and not cur:
+            try:
+                audio_stream.bridge.add(device)
+            except Exception:
+                pass
+            session._load_device_connected = True
+        elif not connected and cur:
+            try:
+                audio_stream.bridge.remove(device)
+            except Exception:
+                pass
+            session._load_device_connected = False
+
+    def _load_start_audio(self, session):
+        # Optional: inject audible audio (a sound file, or 'noise') into the
+        # NON-active load legs. By default nothing is injected - the legs are
+        # silent load. The active leg is left clear for your microphone (see
+        # _load_route_audio), so we never inject into it.
+        sound = getattr(self, '_load_soundfile', None)
+        if sound and sound not in ('silence', 'blank', 'mute') and session is not self.active_session:
+            try:
+                audio_stream = next((s for s in (session.streams or []) if s.type == 'audio'), None)
+                if audio_stream is not None:
+                    if sound in ('noise', 'whitenoise', 'white-noise'):
+                        path = self._load_noise_file()
+                    else:
+                        path = sound if os.path.isabs(sound) else ResourcePath(sound).normalized
+                        if not os.path.exists(path):
+                            show_notice('Load test: sound file not found: %s' % path)
+                            path = None
+                    if path:
+                        player = WavePlayer(audio_stream.mixer, path, loop_count=0, pause_time=0, volume=15)
+                        audio_stream.bridge.add(player)
+                        player.start()
+                        session._load_tone_player = player
+            except Exception as e:
+                show_notice('Load test: could not start sound for a call: %s' % e)
+        self._load_route_audio()
+
+    def _CH_load(self, target, capacity='30', timeout='120', soundfile=None):
+        # /load {room} [capacity] [timeout] [soundfile]
+        #     Ramp [capacity] audio calls to {room} at 1/sec, hold [timeout]s
+        #     (0 = hold until /load stop), then hang up all. Legs stay active
+        #     (never on hold); the active leg carries your mic, the rest are
+        #     silent load. Pass [soundfile] (or 'noise') to inject audio into
+        #     the non-active legs.
+        # /load add {n}      add n more legs to the running test's room
+        # /load remove {n}   hang up n of the running test's legs
+        # /load stop         hang up everything and end the test
+        #
+        # add/remove always act on the load-test room (self._load_target), not
+        # on whatever call happens to be active, so you can adjust concurrency
+        # live and watch the server's memory react.
+        if target == 'stop':
+            self._load_teardown(manual=True)
+            return
+        if target == 'add':
+            self._load_add(capacity)
+            return
+        if target == 'remove':
+            self._load_remove(capacity)
+            return
+        try:
+            capacity = int(capacity)
+            timeout = int(timeout)
+        except (TypeError, ValueError):
+            raise TypeError()
+        if capacity < 1:
+            show_notice('Load test: capacity must be >= 1')
+            return
+        if getattr(self, '_load_active', False):
+            show_notice('Load test already running on %s; use /load add {n} | /load remove {n} | /load stop' % getattr(self, '_load_target', '?'))
+            return
+        self._load_active = True
+        self._load_calls = []
+        self._load_soundfile = soundfile
+        self._load_target = target
+        self._load_count = capacity
+        hold = 'hold until /load stop' if timeout == 0 else 'hold %ds then hang up all' % timeout
+        show_notice('Load test: ramping %d call(s) to %s at 1/sec, %s (audio: %s)' % (capacity, target, hold, soundfile or 'silence'))
+        # Schedule one new call per second up to capacity...
+        for i in range(capacity):
+            self._load_calls.append(reactor.callLater(i, self._load_spawn_one, target, i + 1, capacity))
+        # ...then tear everything down once ramp-up + hold time has elapsed
+        # (unless timeout is 0, meaning run until /load stop).
+        if timeout > 0:
+            self._load_calls.append(reactor.callLater(capacity + timeout, self._load_teardown))
+
+    def _load_add(self, count):
+        if not getattr(self, '_load_active', False) or not getattr(self, '_load_target', None):
+            show_notice('No load test is running; start one with /load {room} {capacity}')
+            return
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            raise TypeError()
+        if count < 1:
+            show_notice('Load test: add count must be >= 1')
+            return
+        target = self._load_target
+        base = getattr(self, '_load_count', 0)
+        show_notice('Load test: adding %d call(s) to %s at 1/sec' % (count, target))
+        for i in range(count):
+            self._load_calls.append(reactor.callLater(i, self._load_spawn_one, target, base + i + 1, base + count))
+        self._load_count = base + count
+
+    def _load_remove(self, count):
+        if not getattr(self, '_load_active', False):
+            show_notice('No load test is running')
+            return
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            raise TypeError()
+        if count < 1:
+            show_notice('Load test: remove count must be >= 1')
+            return
+        # Only the load-test legs are eligible; prefer non-active ones so your
+        # voice leg survives until last.
+        load_sessions = [s for s in self.connected_sessions if getattr(s, '_load', False)]
+        load_sessions.sort(key=lambda s: s is self.active_session)
+        to_remove = load_sessions[:count]
+        if not to_remove:
+            show_notice('Load test: no load legs to remove')
+            return
+        show_notice('Load test: removing %d call(s)' % len(to_remove))
+        for session in to_remove:
+            try:
+                session.end()
+            except Exception:
+                pass
+
+    def _load_spawn_one(self, target, n, capacity):
+        if not getattr(self, '_load_active', False):
+            return
+        show_notice('Load test: starting call %d/%d to %s' % (n, capacity, target))
+        try:
+            OutgoingCallInitializer(self.account, target, audio=True, load=True).start()
+        except Exception as e:
+            show_notice('Load test: call %d failed to start: %s' % (n, e))
+
+    def _load_teardown(self, manual=False):
+        if not getattr(self, '_load_active', False):
+            if manual:
+                show_notice('No load test is running')
+            return
+        self._load_active = False
+        # Cancel any still-pending ramp-up / teardown timers (relevant when
+        # the user stops the test mid ramp-up).
+        for call in getattr(self, '_load_calls', []):
+            try:
+                if call.active():
+                    call.cancel()
+            except Exception:
+                pass
+        self._load_calls = []
+        # Only hang up the load-test legs, never a manual call you may have up.
+        sessions = [s for s in self.connected_sessions if getattr(s, '_load', False)]
+        show_notice('Load test: %s - hanging up %d call(s)' % ('stopped' if manual else 'timeout reached', len(sessions)))
+        for session in sessions:
+            try:
+                session.end()
+            except Exception:
+                pass
+        if self.outgoing_session is not None and getattr(self.outgoing_session, '_load', False):
+            try:
+                self.outgoing_session.end()
+            except Exception:
+                pass
+        self._load_target = None
+        self._load_count = 0
 
     def _CH_video(self, target=None, chat_option=None):
         # In-call window control: `/video open` and `/video close`
@@ -4090,6 +4373,7 @@ class SIPSessionApplication(SIPApplication):
                 identity = '"%s" <%s>' % (self.active_session.remote_identity.display_name, identity)
             show_notice('Active SIP session: "%s" (%d/%d)' % (identity, self.connected_sessions.index(self.active_session)+1, len(self.connected_sessions)))
             self._update_prompt()
+            self._load_route_audio()
 
     def _CH_prev(self):
         if len(self.connected_sessions) > 1:
@@ -4103,6 +4387,7 @@ class SIPSessionApplication(SIPApplication):
                 identity = '"%s" <%s>' % (self.active_session.remote_identity.display_name, identity)
             show_notice('Active SIP session: "%s" (%d/%d)' % (identity, self.connected_sessions.index(self.active_session)+1, len(self.connected_sessions)))
             self._update_prompt()
+            self._load_route_audio()
 
     def _CH_sessions(self):
         if self.connected_sessions:
@@ -4111,7 +4396,13 @@ class SIPSessionApplication(SIPApplication):
                 identity = str(session.remote_identity.uri)
                 if session.remote_identity.display_name:
                     identity = '"%s" <%s>' % (session.remote_identity.display_name, identity)
-                lines.append('  SIP session with %s (%d/%d) - %s' % (identity, self.connected_sessions.index(session)+1, len(self.connected_sessions), 'active' if session is self.active_session else 'on hold'))
+                if any(getattr(stream, 'on_hold', False) for stream in (session.streams or [])):
+                    state = 'on hold'
+                elif session is self.active_session:
+                    state = 'active'
+                else:
+                    state = 'connected'
+                lines.append('  SIP session with %s (%d/%d) - %s' % (identity, self.connected_sessions.index(session)+1, len(self.connected_sessions), state))
             if len(self.connected_sessions) > 1:
                 lines.append('Use the /next and /prev commands to switch the active session')
             show_notice(lines)
@@ -5217,6 +5508,10 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /video {user[@domain]} [+chat]: call the specified user using audio and video, and possibly chat')
         lines.append('  /chat {user[@domain]} [+audio]: call the specified user using chat and possibly audio')
         lines.append('  /conf {room}: join conference room using chat and audio')
+        lines.append('  /load {room} [capacity] [timeout] [soundfile]: load-test - ramp [capacity] audio calls (default 30) to {room} at 1/sec, hold [timeout]s (default 120, 0 = until stop), then hang up all. Legs stay active (never on hold); the active leg carries your mic, the rest are silent load. Pass [soundfile] (or "noise") to inject audio into non-active legs.')
+        lines.append('  /load add {n}: add n more legs to the running load test')
+        lines.append('  /load remove {n}: hang up n of the running load test legs')
+        lines.append('  /load stop: hang up all load-test legs and end the test')
         lines.append('  /[message | m] {user[@domain]}: start a message session')
         lines.append('  /send {user[@domain]} {file}: initiate a file transfer with the specified user')
         lines.append('  /next: select the next connected session')
