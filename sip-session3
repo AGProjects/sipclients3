@@ -3074,7 +3074,7 @@ class SIPSessionApplication(SIPApplication):
                             if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                                 message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'error')
                             return
-                        except ValueError as e:
+                        except (ValueError, NotImplementedError) as e:
                             show_notice("%s %s wrote: %s" % (datetime.now().replace(microsecond=0), identity, content))
                             if cpim_imdn_events and imdn_timestamp and self.account.sms.enable_imdn and 'display' in cpim_imdn_events:
                                 message_session.send_imdn_notification(imdn_id, imdn_timestamp, identity, sender_identity, 'displayed')
