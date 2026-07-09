@@ -1,4 +1,4 @@
-sipclients (5.5.0) trixie; urgency=medium
+sipclients (5.5.0) unstable; urgency=medium
 
   * Fix starting MSRP session without OTR installed
   * Work around a Python 3.11 ssl.SSLContext.verify_mode
