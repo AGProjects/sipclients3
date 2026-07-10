@@ -4,6 +4,8 @@ set -e
 distro="${1:-}"
 mode="${2:-}"
 
+sudo apt install equivs devscripts
+
 # rebuild mode: reuse the extracted build tree from a previous run;
 # skips clean (-nc) and builds binary packages only (-b)
 if [ "$mode" = "rebuild" ]; then
