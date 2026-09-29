@@ -1219,8 +1219,21 @@ class OutgoingCallInitializer(object):
     def reconnect(self, after=5):
         if not self.auto_reconnect:
            return
+        if SIPSessionApplication().stopping:
+            return
+        show_notice('Will reconnect to %s in %d seconds (Ctrl-D to stop)' % (self.target, after), bold=False)
+        # A timer, not api.sleep: sleeping here blocks the green thread
+        # that delivered the notification, and the reconnect then fires
+        # regardless of what happened in the meantime -- including the
+        # application shutting down.
+        application = SIPSessionApplication()
+        application.pending_reconnect = reactor.callLater(after, self._post_reconnect)
 
-        api.sleep(after)
+    def _post_reconnect(self):
+        application = SIPSessionApplication()
+        application.pending_reconnect = None
+        if application.stopping:
+            return
         notification_center = NotificationCenter()
         notification_center.post_notification('SessionMustReconnect', data=NotificationData(target=str(self.target)))
 
@@ -1410,10 +1423,10 @@ class OutgoingCallInitializer(object):
         elif notification.data.failure_reason == 'user request':
             show_notice('SIP session rejected by user (%d %s)' % (code, notification.data.reason))
         else:
-            pass
-            #show_notice('SIP session failed: %s' % notification.data.failure_reason)
+            show_notice('SIP session failed: %s (%s %s)' % (notification.data.failure_reason, code, notification.data.reason))
 
-        self.reconnect(15)
+        if notification.data.failure_reason != 'user request':
+            self.reconnect(15)
 
     def _remove_lock(self):
         # used by external audio recorder to know if we are in call
@@ -2227,6 +2240,8 @@ class SIPSessionApplication(SIPApplication):
         self.smp_verification_tries = 5
         self.smp_secret = None
         self.must_exit = False
+        self.stopping = False
+        self.pending_reconnect = None
         self.last_failure_reason = None
         self.enable_playback = False
         self.auto_record = False
@@ -2596,7 +2611,28 @@ class SIPSessionApplication(SIPApplication):
                 
     def _NH_SIPApplicationWillEnd(self, notification):
         show_notice('Application will end')
+        self.stopping = True
+        if self.pending_reconnect is not None and self.pending_reconnect.active():
+            self.pending_reconnect.cancel()
+        self.pending_reconnect = None
         self.ip_address_monitor.stop()
+        # The SDK shutdown waits for every session to terminate; one stuck
+        # in DNS or INVITE never does and SIPApplicationDidEnd never comes.
+        # Do not leave the user at a dead prompt.
+        watchdog = Timer(10, self._force_exit)
+        watchdog.daemon = True
+        watchdog.start()
+
+    def _force_exit(self):
+        if self.stopped_event.is_set():
+            return
+        show_notice('Shutdown did not complete in 10 seconds, forcing exit')
+        try:
+            UI().stop()
+        except Exception:
+            pass
+        sleep(0.2)
+        os._exit(1)
 
     def _NH_SIPApplicationDidEnd(self, notification):
         ui = UI()
@@ -4102,15 +4138,36 @@ class SIPSessionApplication(SIPApplication):
     def _NH_ChatStreamGotMessage(self, notification):
         if not notification.data.message.content_type.startswith("text/"):
             return
-        remote_identity = notification.data.message.sender.display_name or notification.data.message.sender.uri
-        doc = html.fromstring(notification.data.message.content)
-        if doc.body.text is not None:
-            doc.body.text = doc.body.text.lstrip('\n')
-        for br in doc.xpath('.//br'):
-            br.tail = '\n' + (br.tail or '')
+        message = notification.data.message
+        remote_identity = message.sender.display_name or message.sender.uri
+        content = message.content
+        if isinstance(content, bytes):
+            content = content.decode('utf-8', 'replace')
+        if not content or not content.strip():
+            # SylkServer sends empty/whitespace messages (e.g. on join);
+            # lxml refuses to parse an empty document.
+            return
+        if message.content_type == 'text/html':
+            # document_fromstring always yields <html><body>, which
+            # fromstring does not for a bare fragment (no .body then)
+            try:
+                doc = html.document_fromstring(content)
+            except Exception:
+                text = content
+            else:
+                body = doc.body
+                if body.text is not None:
+                    body.text = body.text.lstrip('\n')
+                for br in body.xpath('.//br'):
+                    br.tail = '\n' + (br.tail or '')
+                text = body.text_content()
+        else:
+            # text/plain is not markup: parsing it as HTML drops anything
+            # that looks like a tag and fails on a plain string
+            text = content
         head = RichText('%s> ' % remote_identity, foreground='blue')
         ui = UI()
-        ui.writelines([head + line for line in doc.body.text_content().splitlines()])
+        ui.writelines([head + line for line in text.splitlines()])
 
     def _NH_DefaultAudioDeviceDidChange(self, notification):
         SIPApplication._NH_DefaultAudioDeviceDidChange(self, notification)
@@ -4615,6 +4672,8 @@ class SIPSessionApplication(SIPApplication):
         call_initializer.start()
 
     def _NH_SessionMustReconnect(self, notification):
+        if self.stopping:
+            return
         show_notice('Reconnecting session to %s\n' % notification.data.target)
         self._CH_conf(notification.data.target)
 
@@ -5027,6 +5086,10 @@ class SIPSessionApplication(SIPApplication):
         elif self.outgoing_session is not None:
             ui.status = 'Cancelling SIP session...'
             self.outgoing_session.end()
+        elif self.pending_reconnect is not None and self.pending_reconnect.active():
+            self.pending_reconnect.cancel()
+            self.pending_reconnect = None
+            show_notice('Reconnect cancelled')
         elif self.message_session_to:
             # Inside a chat: Ctrl-D exits the chat, not the program.
             try:
