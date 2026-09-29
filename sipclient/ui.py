@@ -19,6 +19,7 @@ import sys
 import termios
 from collections import deque
 from threading import RLock, Thread
+from time import monotonic
 
 from application.python.decorator import decorator, preserve_signature
 from application.python.queue import EventQueue
@@ -260,6 +261,9 @@ class UI(Thread, metaclass=Singleton):
         self.input = Input()
         self.input.add_history(history_file)
         self.last_window_size = None
+        # When UIInputDidChange last went out, so that holding a key down
+        # does not put a notification on every observer per character.
+        self.last_input_change = None
         self.prompt_y = None
         self.questions = deque()
         self.stopping = False
@@ -563,6 +567,7 @@ class UI(Thread, metaclass=Singleton):
                             self.input.current_line = self.input.current_line[:self.input.cursor_position] + char + self.input.current_line[self.input.cursor_position:]
                             self.input.cursor_position += 1
                             self._update_prompt()
+                            self._note_input_changed()
 
     def _raw_write(self, text):
         sys.__stdout__.write(str(text))
@@ -752,5 +757,33 @@ class UI(Thread, metaclass=Singleton):
             self.input.current_line = self.input.current_line[:self.input.cursor_position-1]+self.input.current_line[self.input.cursor_position:]
             self.input.cursor_position -= 1
             self._update_prompt()
+            self._note_input_changed()
+
+    def _note_input_changed(self):
+        """Announce that the user edited the line they are typing.
+
+        Sent per keystroke and carrying the whole line, because what the
+        line IS decides what an observer may do with it: a line starting
+        with the command sequence is an instruction to this program, not
+        a message anyone else will ever see. Deciding that here would put
+        knowledge of what the line is FOR into the terminal, so the line
+        goes out as it stands and the application judges it.
+
+        Erasing back to an empty line is announced too -- it is how a
+        typing indicator learns that the user gave up on a message, and it
+        goes out immediately rather than waiting for the rate limit below.
+
+        Rate limited to one a second otherwise. Every observer of this
+        object sees every notification it posts, and some of them do real
+        work per notification; a burst of typing is not worth that, and no
+        reader of "the user is typing" needs to hear it per character.
+        """
+        line = self.input.current_line
+        now = monotonic()
+        if line and self.last_input_change is not None and now - self.last_input_change < 1:
+            return
+        self.last_input_change = now
+        NotificationCenter().post_notification('UIInputDidChange', sender=self,
+                                               data=NotificationData(text=line))
 
 

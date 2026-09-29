@@ -899,7 +899,8 @@ class SIPAudioApplication(SIPApplication):
         self.outgoing_session = session = Session(self.account)
         notification_center.add_observer(self, sender=session)
         streams = [MediaStreamRegistry.AudioStream(), MediaStreamRegistry.VideoStream()] if self.enable_video else [MediaStreamRegistry.AudioStream()]
-        session.connect(ToHeader(self.target), routes=notification.data.result, streams=streams)
+        extra_headers = [Header('X-No-MediaProxy', 'yes')] if self.options.no_mp else []
+        session.connect(ToHeader(self.target), routes=notification.data.result, streams=streams, extra_headers=extra_headers)
 
     def _NH_DNSLookupDidFail(self, notification):
         self.output.put('DNS lookup failed: %s\n' % notification.data.error)
@@ -1716,6 +1717,7 @@ if __name__ == '__main__':
     parser.add_option('-b', '--batch', action='store_true', dest='batch_mode', default=False, help='Run the program in batch mode: reading input from the console is disabled and the option --auto-answer is implied. This is particularly useful when running this script in a non-interactive environment.')
     parser.add_option('-f', '--play-failure-code', action='store_true', dest='play_failure_code', default=False, help='Play failure code using festival.')
     parser.add_option('-D', '--daemonize', action='store_true', dest='daemonize', default=False, help='Enable running this program as a deamon.')
+    parser.add_option('--no-mp', action='store_true', dest='no_mp', default=False, help='Add X-No-MediaProxy header to outgoing INVITE to bypass MediaProxy.')
     parser.add_option('-R', '--auto-reconnect', action='store_true', dest='auto_reconnect', default=False, help='Auto reconnect call if disconnected by remote.')
     options, args = parser.parse_args()
 
