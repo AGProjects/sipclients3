@@ -112,6 +112,7 @@ class RegistrationApplication(SIPApplication):
         notification_center.add_observer(self, name='SIPSessionNewIncoming')
         notification_center.add_observer(self, name='DNSLookupDidSucceed')
         notification_center.add_observer(self, name='TLSTransportHasChanged')
+        notification_center.add_observer(self, name='SIPEngineTransportGotCertificateError')
 
         if self.input:
             self.input.start()
@@ -307,6 +308,14 @@ class RegistrationApplication(SIPApplication):
         else:
             self.output.put('%s Failed to register contact for sip:%s: %s\n' % (datetime.now().replace(microsecond=0), self.account.id, reason))
             self.stop()
+
+    def _NH_SIPEngineTransportGotCertificateError(self, notification):
+        data = notification.data
+        cert = data.get('certificate') if isinstance(data, dict) else getattr(data, 'certificate', None)
+        get = (lambda k: data.get(k)) if isinstance(data, dict) else (lambda k: getattr(data, k, None))
+        self.output.put('%s TLS certificate verification failed for %s (%s, expected name %s): %s (verify_status=0x%x)\n' % (datetime.now().replace(microsecond=0), get('remote_address'), get('remote_ip'), get('remote_hostname'), get('reason'), get('verify_status') or 0))
+        if cert:
+            self.output.put('  Subject: %s\n  Issuer: %s\n  Valid: %s - %s\n  SAN: %s\n' % (cert.get('subject_info') or cert.get('subject'), cert.get('issuer_info') or cert.get('issuer'), cert.get('not_before'), cert.get('not_after'), ', '.join(cert.get('alternative_names') or [])))
 
     def _NH_TLSTransportHasChanged(self, notification):
         self.output.put('TLS verify server: %s\n' % notification.data.verify_server)
