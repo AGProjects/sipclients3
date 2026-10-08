@@ -67,6 +67,27 @@ def display_object(obj, name):
 
     [display_object(getattr(obj, child), child) for child in dir(type(obj)) if isinstance(getattr(type(obj), child, None), SettingsGroupMeta)]
 
+def get_section(obj, section):
+    # section may be dotted, e.g. rtp.encryption
+    for part in section.split('.'):
+        if not isinstance(getattr(type(obj), part, None), SettingsGroupMeta):
+            groups = sorted(child for child in dir(type(obj)) if isinstance(getattr(type(obj), child, None), SettingsGroupMeta))
+            raise KeyError('No section %r (available: %s)' % (part, ', '.join(groups) or 'none'))
+        obj = getattr(obj, part)
+    return obj
+
+def show_sections(obj, sections):
+    # sections is a comma separated list, e.g. sip,rtp.encryption
+    for section in (s.strip() for s in sections.split(',')):
+        if not section:
+            continue
+        try:
+            group = get_section(obj, section)
+        except KeyError as e:
+            print(e.args[0])
+            continue
+        display_object(group, section.rsplit('.', 1)[-1])
+
 class SettingsParser(object):
 
     @classmethod
@@ -185,7 +206,7 @@ class AccountConfigurator(object):
                 account.delete()
             print('Accounts deleted')
 
-    def show(self, sip_address=None):
+    def show(self, sip_address=None, section=None):
         if sip_address is None:
             accounts = [self.account_manager.default_account]
             if accounts[0] is None:
@@ -201,7 +222,10 @@ class AccountConfigurator(object):
                 return
         for account in accounts:
             print('Account %s:' % account.id)
-            display_object(account, 'account')
+            if section is None:
+                display_object(account, 'account')
+            else:
+                show_sections(account, section)
 
     def set(self, *args):
         if not args:
@@ -277,9 +301,12 @@ class SIPSimpleConfigurator(object):
         self.configuration_manager.start()
         SIPSimpleSettings()
 
-    def show(self):
+    def show(self, section=None):
         print('SIP SIMPLE settings:')
-        display_object(SIPSimpleSettings(), 'SIP SIMPLE')
+        if section is None:
+            display_object(SIPSimpleSettings(), 'SIP SIMPLE')
+        else:
+            show_sections(SIPSimpleSettings(), section)
 
     def set(self, *args):
         sipsimple_settings = SIPSimpleSettings()
@@ -317,12 +344,12 @@ class SIPSimpleConfigurator(object):
 if __name__ == '__main__':
     description = "This script manages the SIP SIMPLE client SDK settings."
     usage = """%prog [--general|--account] [options] command [arguments]
-       %prog --general show
+       %prog --general show [section[.subsection][,section...]]
        %prog --general set key1=value1 [key2=value2 ...]
        %prog --account list
        %prog --account add user@domain password
        %prog --account delete user@domain|ALL
-       %prog --account show [user@domain|ALL]
+       %prog --account show [user@domain|ALL] [section[.subsection][,section...]]
        %prog --account set [user@domain|ALL] key1=value1|DEFAULT [key2=value2|DEFAULT ...]
        %prog --account default user@domain"""
     parser = OptionParser(usage=usage, description=description)
