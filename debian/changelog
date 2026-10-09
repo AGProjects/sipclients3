@@ -1,3 +1,16 @@
+sipclients (5.6.0) unstable; urgency=medium
+
+  * Allow dump of specific config sections
+  * Removed expired certificates
+  * Log TLS certificate error
+  * Skip audio devices that fail to open when cycling
+  * Fix decoding non pgp payload
+  * Added load tester
+  * Fix decoding encryption cypher
+  * Fix render of incoming video calls
+
+ -- Adrian Georgescu <ag@ag-projects.com>  Fri, 09 Oct 2026 15:10:35 -0300
+
 sipclients (5.5.0) unstable; urgency=medium
 
   * Fix starting MSRP session without OTR installed
