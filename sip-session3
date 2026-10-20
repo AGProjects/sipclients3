@@ -4254,6 +4254,18 @@ class SIPSessionApplication(SIPApplication):
             return
         info = notification.data.conference_info
 
+        try:
+            state = info.conference_state
+            user_count = getattr(state.user_count, 'value', state.user_count) if state is not None else None
+        except Exception:
+            user_count = None
+        try:
+            n_users = len(list(info.users))
+        except Exception:
+            n_users = '?'
+        show_notice('%s conference-info NOTIFY v%s participants=%s users=%s call-id %s' % (
+            datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], info.version, user_count, n_users, notification.sender.call_id), bold=False)
+
         def _bare(entity):
             return entity.split(':', 1)[1] if entity and ':' in entity else (entity or '')
 
