@@ -304,7 +304,7 @@ from sipsimple.payloads.iscomposing import IsComposingMessage, IsComposingDocume
 from sipsimple.session import IllegalStateError, Session
 from sipsimple.streams import MediaStreamRegistry
 from sipsimple.streams.msrp.filetransfer import FileSelector
-from sipsimple.streams.msrp.chat import CPIMPayload, CPIMHeader, CPIMNamespace, SimplePayload, CPIMParserError, ChatIdentity, OTREncryption
+from sipsimple.streams.msrp.chat import CPIMPayload, CPIMHeader, CPIMNamespace, SimplePayload, CPIMParserError, ChatIdentity, OTREncryption, ChatStream
 from sipsimple.core import FrameBufferVideoRenderer
 from sipclient.video import VideoWindow
 from sipsimple.payloads.imdn import IMDNDocument, DisplayNotification, DeliveryNotification
@@ -318,6 +318,7 @@ from sipclient.configuration.account import AccountExtension, BonjourAccountExte
 from sipclient.configuration.datatypes import ResourcePath
 from sipclient.configuration.settings import SIPSimpleSettingsExtension
 from sipclient.log import Logger
+from sipclient import radio_ptt
 from sipclient.system import IPAddressMonitor, copy_default_certificates
 from sipclient.ui import Prompt, Question, RichText, UI
 
@@ -392,6 +393,16 @@ def show_notice(text, bold=True):
 # correlates the call end-to-end. Falls back through dialog_id →
 # _invitation → '?' so it works for both established and pre-INVITE
 # sessions.
+def _session_supports_contact_parameters():
+    # python3-sipsimple gained Session.connect(contact_parameters=...) for the
+    # radio PTT feature tag; older installs only get accept-wrapped-types.
+    import inspect
+    try:
+        return 'contact_parameters' in inspect.signature(Session.connect).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _sip_call_id(session):
     if session is None:
         return '?'
@@ -1260,9 +1271,12 @@ class OutgoingCallInitializer(object):
         # SDK (Session.connect) when account.rtp.encryption is
         # opportunistic or zrtp. The application no longer needs to
         # touch extra_headers for that.
-        session.connect(ToHeader(self.target), routes=notification.data.result,
-                        streams=self.streams)
         application = SIPSessionApplication()
+        connect_kwargs = {}
+        if application.radio_ptt is not None and _session_supports_contact_parameters():
+            connect_kwargs['contact_parameters'] = {radio_ptt.FEATURE_TAG: None}
+        session.connect(ToHeader(self.target), routes=notification.data.result,
+                        streams=self.streams, **connect_kwargs)
         application.outgoing_session = session
 
     def _NH_DNSLookupDidFail(self, notification):
@@ -2253,6 +2267,9 @@ class SIPSessionApplication(SIPApplication):
         # Started in _NH_SIPSessionDidStart when --dump is given on
         # the command line, terminated in _NH_SIPSessionDidEnd.
         self.pcap_processes = {}
+        # Radio PTT endpoint controller (sipclient.radio_ptt), created at
+        # application start when settings.radio_ptt.on_command is set.
+        self.radio_ptt = None
 
     def handle_notification(self, notification):
         alive_file = os.path.join(config_directory, 'last_notification')
@@ -2532,6 +2549,7 @@ class SIPSessionApplication(SIPApplication):
         show_notice('Available video codecs: %s\n' % ', '.join([codec.decode() for codec in engine._ua.available_video_codecs]))
 
         self.ip_address_monitor.start()
+        self._start_radio_ptt()
 
         if self.enable_playback:
             show_notice("Polling %s for wav files" % self.playback_dir)
@@ -2609,6 +2627,31 @@ class SIPSessionApplication(SIPApplication):
         call_initializer = OutgoingCallInitializer(self.account, play_object['target'], audio=True, play_file=self.play_file)
         call_initializer.start()
                 
+    def _start_radio_ptt(self):
+        settings = SIPSimpleSettings().radio_ptt
+        if not settings.on_command:
+            return
+        # Accepting the PTT content type inside CPIM is both what lets the
+        # commands from the focus through and how the focus learns that this
+        # endpoint drives a radio (it shows up in a=accept-wrapped-types).
+        if radio_ptt.CONTENT_TYPE not in ChatStream.accept_wrapped_types:
+            ChatStream.accept_wrapped_types = ChatStream.accept_wrapped_types + [radio_ptt.CONTENT_TYPE]
+        self.radio_ptt = radio_ptt.RadioPTTEndpoint(settings.on_command, settings.off_command, settings.status_file,
+                                                    timeout=settings.timeout, confirm_timeout=settings.confirm_timeout,
+                                                    poll_interval=settings.poll_interval,
+                                                    log=lambda text: show_notice(text, bold=False))
+        self.radio_ptt.start()
+        if _session_supports_contact_parameters():
+            show_notice('Radio PTT: advertising Contact %s and MSRP %s' % (radio_ptt.FEATURE_TAG, radio_ptt.CONTENT_TYPE), bold=False)
+        else:
+            show_notice('Radio PTT: installed sipsimple has no Session.connect(contact_parameters), '
+                        'advertising MSRP %s only (no Contact %s)' % (radio_ptt.CONTENT_TYPE, radio_ptt.FEATURE_TAG), bold=False)
+
+    def _radio_ptt_chat_stream(self, session):
+        if self.radio_ptt is None or not getattr(session, 'remote_focus', False):
+            return None
+        return next((stream for stream in session.streams or [] if stream.type == 'chat'), None)
+
     def _NH_SIPApplicationWillEnd(self, notification):
         show_notice('Application will end')
         self.stopping = True
@@ -2616,6 +2659,8 @@ class SIPSessionApplication(SIPApplication):
             self.pending_reconnect.cancel()
         self.pending_reconnect = None
         self.ip_address_monitor.stop()
+        if self.radio_ptt is not None:
+            self.radio_ptt.stop()
         # The SDK shutdown waits for every session to terminate; one stuck
         # in DNS or INVITE never does and SIPApplicationDidEnd never comes.
         # Do not leave the user at a dead prompt.
@@ -3618,6 +3663,10 @@ class SIPSessionApplication(SIPApplication):
         session = notification.sender
 
         self.connected_sessions.append(session)
+        radio_stream = self._radio_ptt_chat_stream(session)
+        if radio_stream is not None:
+            session._radio_ptt_stream = radio_stream
+            self.radio_ptt.attach(radio_stream)
         if getattr(session, '_load', False):
             # Load-test leg: keep every call active (never on hold) so all of
             # them keep pushing audio through the conference mixer. Don't hold
@@ -3832,6 +3881,10 @@ class SIPSessionApplication(SIPApplication):
         notification_center.discard_observer(self, sender=session)
         for stream in session.streams or session.proposed_streams or []:
             notification_center.discard_observer(self, sender=stream)
+        radio_stream = getattr(session, '_radio_ptt_stream', None)
+        if radio_stream is not None and self.radio_ptt is not None:
+            self.radio_ptt.detach(radio_stream)
+            session._radio_ptt_stream = None
 
         # Stop the looping load-test tone, if this was a /load leg.
         player = getattr(session, '_load_tone_player', None)
@@ -4136,6 +4189,9 @@ class SIPSessionApplication(SIPApplication):
         self._update_prompt()
 
     def _NH_ChatStreamGotMessage(self, notification):
+        if notification.data.message.content_type.lower() == radio_ptt.CONTENT_TYPE:
+            self._handle_radio_ptt_message(notification.sender, notification.data.message)
+            return
         if not notification.data.message.content_type.startswith("text/"):
             return
         message = notification.data.message
@@ -4168,6 +4224,22 @@ class SIPSessionApplication(SIPApplication):
         head = RichText('%s> ' % remote_identity, foreground='blue')
         ui = UI()
         ui.writelines([head + line for line in text.splitlines()])
+
+    def _handle_radio_ptt_message(self, stream, message):
+        session = stream.session
+        if self.radio_ptt is None or getattr(session, '_radio_ptt_stream', None) is not stream:
+            show_notice('Ignoring radio PTT message: radio PTT is not configured for this session', bold=False)
+            return
+        # Only the conference focus may key the radio.
+        def _aor(uri):
+            def _s(x):
+                return (x.decode() if isinstance(x, bytes) else (x or '')).lower()
+            return '%s@%s' % (_s(uri.user), _s(uri.host))
+        sender = message.sender.uri if message.sender is not None else None
+        if sender is None or _aor(sender) != _aor(session.remote_identity.uri):
+            show_notice('Ignoring radio PTT message from %s: not from the conference focus' % sender, bold=False)
+            return
+        self.radio_ptt.handle_command(stream, message.content)
 
     def _NH_DefaultAudioDeviceDidChange(self, notification):
         SIPApplication._NH_DefaultAudioDeviceDidChange(self, notification)
@@ -4247,12 +4319,21 @@ class SIPSessionApplication(SIPApplication):
         ui.status = None
 
     def _NH_SIPSessionGotConferenceInfo(self, notification):
+        info = notification.data.conference_info
+        # Track radio PTT endpoints on every leg (used by /ptt), report
+        # changes only for the active one.
+        radios = self._radio_ptt_from_conference_info(info)
+        previous = getattr(notification.sender, '_radio_ptt_endpoints', {}) or {}
+        notification.sender._radio_ptt_endpoints = radios
         # Every leg receives its own conference NOTIFY, so during a load test
         # this would print once per leg. Only report the conference roster for
         # the call you're actually on (the active session).
         if notification.sender is not self.active_session:
             return
-        info = notification.data.conference_info
+        for entity, radio in radios.items():
+            old = previous.get(entity)
+            if old is None or (old['state'], old['by']) != (radio['state'], radio['by']):
+                show_notice(self._format_radio_ptt(radio))
 
         try:
             state = info.conference_state
@@ -4264,7 +4345,7 @@ class SIPSessionApplication(SIPApplication):
         except Exception:
             n_users = '?'
         show_notice('%s conference-info NOTIFY v%s participants=%s users=%s call-id %s' % (
-            datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], info.version, user_count, n_users, notification.sender.call_id), bold=False)
+            datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], info.version, user_count, n_users, _sip_call_id(notification.sender)), bold=False)
 
         def _bare(entity):
             return entity.split(':', 1)[1] if entity and ':' in entity else (entity or '')
@@ -4278,8 +4359,15 @@ class SIPSessionApplication(SIPApplication):
                 endpoints = list(user)
             except TypeError:
                 endpoints = []
-            instances = [_bare(getattr(ep, 'entity', None)) for ep in endpoints]
-            instances = [i for i in instances if i]
+            instances = []
+            for ep in endpoints:
+                instance = _bare(getattr(ep, 'entity', None))
+                if not instance:
+                    continue
+                radio = radios.get(ep.entity)
+                if radio is not None:
+                    instance += ' [radio %s]' % radio['state']
+                instances.append(instance)
             if instances:
                 lines.append('  %s (%d device%s): %s' % (aor, len(instances), '' if len(instances) == 1 else 's', ', '.join(instances)))
             else:
@@ -4288,6 +4376,83 @@ class SIPSessionApplication(SIPApplication):
         if info.conference_description.resources:
             for file in info.conference_description.resources.files:
                 show_notice('Conference shared file: %s (%s bytes)' % (file.name, file.size))
+
+    @staticmethod
+    def _radio_ptt_from_conference_info(info):
+        radios = {}
+        for user in info.users:
+            aor = user.entity.split(':', 1)[1] if ':' in user.entity else user.entity
+            try:
+                endpoints = list(user)
+            except TypeError:
+                continue
+            for endpoint in endpoints:
+                element = getattr(endpoint, 'radio_ptt', None)
+                if element is None:
+                    continue
+                def _int(value):
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        return None
+                radios[endpoint.entity] = dict(aor=aor, entity=endpoint.entity, state=element.state, by=element.by,
+                                               elapsed=_int(element.elapsed), timeout=_int(element.timeout),
+                                               reason=element.reason)
+        return radios
+
+    @staticmethod
+    def _format_radio_ptt(radio):
+        text = 'Radio %s: %s' % (radio['aor'], radio['state'])
+        if radio['state'] == 'transmitting':
+            text += ' — speak now' if radio['by'] != 'local' else ' (keyed locally at the radio)'
+        if radio['by'] and radio['by'] != 'local':
+            text += ' by %s' % radio['by']
+        if radio['state'] == 'transmitting' and radio['timeout'] is not None and radio['elapsed'] is not None:
+            text += ' (%ds left)' % max(radio['timeout'] - radio['elapsed'], 0)
+        if radio['reason']:
+            text += ' (%s)' % radio['reason']
+        return text
+
+    def _CH_ptt(self, action='press', target=None):
+        session = self.active_session
+        if session is None:
+            show_notice('There is no active session')
+            return
+        if action not in ('press', 'release', 'status'):
+            show_notice('Usage: /ptt [press|release|status] [participant]')
+            return
+        radios = getattr(session, '_radio_ptt_endpoints', None) or {}
+        if action == 'status' or not radios:
+            if not radios:
+                show_notice('No participant in this conference has a radio')
+            for radio in radios.values():
+                show_notice(self._format_radio_ptt(radio))
+            return
+        if target is None:
+            if len(radios) > 1:
+                show_notice('Several radios in this conference, specify one: %s' % ', '.join(sorted(r['aor'] for r in radios.values())))
+                return
+            radio = next(iter(radios.values()))
+        else:
+            target = re.sub('^sips?:', '', target)
+            matches = [r for r in radios.values() if target in (r['aor'], re.sub('^sips?:', '', r['entity']))]
+            if len(matches) != 1:
+                show_notice('No unique radio matches %s; radios: %s' % (target, ', '.join(sorted(r['aor'] for r in radios.values()))))
+                return
+            radio = matches[0]
+        try:
+            chat_stream = next(stream for stream in session.streams if stream.type == 'chat')
+        except StopIteration:
+            show_notice('The active session has no chat stream')
+            return
+        if action == 'press':
+            command_id = radio_ptt.new_command_id()
+            session._radio_ptt_last_id = command_id
+        else:
+            command_id = getattr(session, '_radio_ptt_last_id', None) or radio_ptt.new_command_id()
+        payload = {'action': action, 'id': command_id, 'endpoint': radio['entity']}
+        chat_stream.send_message(json.dumps(payload), content_type=radio_ptt.CONTENT_TYPE)
+        show_notice('%s radio PTT %s id=%s -> %s' % (datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], action, command_id, radio['aor']), bold=False)
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
         show_notice(" ")
@@ -5954,6 +6119,7 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /remove {chat|audio}: remove a stream from the current session')
         lines.append('  /add_participant {user@domain}: add the specified user to the conference')
         lines.append('  /remove_participant {user@domain}: remove the specified user from the conference')
+        lines.append('  /ptt [press|release|status] [participant]: key / unkey the radio of a conference participant')
         lines.append('  /transfer {user@domain}: transfer (using blind transfer) callee to the specified destination')
         lines.append('  /nickname nick: set the user nickname whithin a conference')
         show_notice(lines, bold=False)

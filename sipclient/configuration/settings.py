@@ -38,6 +38,15 @@ class EnrollmentSettings(SettingsGroup):
     url = Setting(type=HTTPURL, default="https://blink.sipthor.net/enrollment.phtml", nillable=True)
 
 
+class RadioPTTSettings(SettingsGroup):
+    on_command = Setting(type=str, default=None, nillable=True)
+    off_command = Setting(type=str, default=None, nillable=True)
+    status_file = Setting(type=str, default=None, nillable=True)
+    timeout = Setting(type=int, default=30)
+    confirm_timeout = Setting(type=float, default=2.0)
+    poll_interval = Setting(type=float, default=0.1)
+
+
 class SIPSimpleSettingsExtension(SettingsObjectExtension):
     user_data_directory = Setting(type=Path, default=Path(os.path.expanduser('~/.sipclient')))
     resources_directory = Setting(type=Path, default=None, nillable=True)
@@ -46,4 +55,5 @@ class SIPSimpleSettingsExtension(SettingsObjectExtension):
     logs = LogsSettingsExtension
     sounds = SoundsSettings
     enrollment = EnrollmentSettings
+    radio_ptt = RadioPTTSettings
 
