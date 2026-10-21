@@ -1640,7 +1640,7 @@ class IncomingCallInitializer(object):
                                                                              stream.remote_rtp_address,
                                                                              stream.remote_rtp_port))
                 if stream.encryption.active:
-                    show_notice('%s RTP stream is encrypted using %s (%s)' % (stream.type.title(), stream.encryption.type, stream.encryption.cipher.decode()))
+                    show_notice('%s RTP stream is encrypted using %s (%s)' % (stream.type.title(), stream.encryption.type, (lambda c: c.decode() if isinstance(c, bytes) else c)(stream.encryption.cipher)))
                 if stream.type == 'video':
                     settings = SIPSimpleSettings()
                     camera = settings.video.device if settings.video.device is not None else 'system default'
