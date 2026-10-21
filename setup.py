@@ -30,6 +30,7 @@ setup(
     data_files=[('share/sipclients3/sounds', glob.glob(os.path.join('resources', 'sounds', '*.wav'))), ('share/sipclients3/tls', ['resources/tls/ca.crt', 'resources/tls/default.crt'])],
     scripts=[
         'sip-audio-session3',
+        'sip-domain-check',
         'sip-message3',
         'sip-publish-presence3',
         'sip-register3',
