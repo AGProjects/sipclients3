@@ -1,0 +1,6 @@
+  File "/usr/lib/python3/dist-packages/sipsimple/core/__init__.py", line 2, in <module>
+    from sipsimple.core._core import *
+ImportError: /usr/lib/python3/dist-packages/sipsimple/core/_core.cpython-37m-arm-linux-gnueabihf.so: undefined symbol: __atomic_fetch_add_8
+
+sudo apt install patchelf
+sudo patchelf --add-needed libatomic.so.1 /usr/lib/python3/dist-packages/sipsimple/core/_core.cpython-37m-arm-linux-gnueabihf.so
