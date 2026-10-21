@@ -2678,6 +2678,9 @@ class SIPSessionApplication(SIPApplication):
         except Exception:
             pass
         sleep(0.2)
+        # os._exit() skips the atexit handler the UI registered to put the
+        # terminal back in cooked/echo mode, so restore it here.
+        _restore_terminal()
         os._exit(1)
 
     def _NH_SIPApplicationDidEnd(self, notification):
@@ -6368,6 +6371,35 @@ class SIPSessionApplication(SIPApplication):
         ui.prompt = Prompt('%s@%s' % (self.account.id.username, self.account.id.domain), foreground='default')
 
 
+_saved_terminal = None
+
+
+def _save_terminal():
+    global _saved_terminal
+    try:
+        import termios
+        if sys.stdin.isatty():
+            _saved_terminal = (sys.stdin.fileno(), termios.tcgetattr(sys.stdin.fileno()))
+    except Exception:
+        _saved_terminal = None
+
+
+def _restore_terminal():
+    try:
+        sys.__stdout__.write('\n')
+        sys.__stdout__.flush()
+    except Exception:
+        pass
+    if _saved_terminal is None:
+        return
+    try:
+        import termios
+        fd, attrs = _saved_terminal
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except Exception:
+        pass
+
+
 def _split_users(value):
     if not value:
         return []
@@ -6428,6 +6460,7 @@ if __name__ == '__main__':
     target = args[0] if args else None
     filepath = args[1] if len(args) == 2 else None
 
+    _save_terminal()
     application = SIPSessionApplication()
     application.start(target, options, filepath)
 
