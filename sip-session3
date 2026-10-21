@@ -2246,6 +2246,7 @@ class SIPSessionApplication(SIPApplication):
         self.message_session_to = None
         self.outgoing_session = None
         self.pending_call = None  # OutgoingCallInitializer still in DNS lookup
+        self.invite_refused = set()  # invitees who declined to join: not invited again
         self.connected_sessions = []
         self.sessions_with_proposals = set()
         self.hangup_timers = {}
@@ -2376,6 +2377,7 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='SIPConferenceGotAddParticipantProgress')
         notification_center.add_observer(self, name='SIPConferenceDidAddParticipant')
         notification_center.add_observer(self, name='SIPConferenceDidNotAddParticipant')
+        notification_center.add_observer(self, name='SIPReferralGotNotify')
 
         log.level.current = log.level.WARNING # get rid of twisted messages
         control_bindings={'s': 'trace sip',
@@ -2606,7 +2608,7 @@ class SIPSessionApplication(SIPApplication):
 
         if self.target is None and getattr(self.options, 'join_when_invited', None) is not None:
             allowed = self.options.join_when_invited
-            show_notice('Waiting to be invited to %s' % (', '.join(allowed) if allowed else 'any conference'))
+            show_notice(_ts() + 'Waiting to be invited to %s' % (', '.join(allowed) if allowed else 'any conference'))
 
         if self.target is not None:
             if self.filepath:
@@ -3526,8 +3528,84 @@ class SIPSessionApplication(SIPApplication):
 
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=session)
-            call_initializer = IncomingCallInitializer(session, self.options.auto_answer_interval)
+            answer_interval = self.options.auto_answer_interval
+            join = self._conference_invitation(session)
+            if join is False:
+                return
+            if join:
+                answer_interval = 0
+            call_initializer = IncomingCallInitializer(session, answer_interval)
             call_initializer.start()
+
+    def _conference_invitation(self, session):
+        # --join-when-invited: a conference server invites us by calling us
+        # from the room. Returns True to answer at once, False if the call was
+        # rejected here, None to handle it as any other incoming call.
+        allowed = getattr(self.options, 'join_when_invited', None)
+        if allowed is None:
+            return None
+        uri = session.remote_identity.uri
+        user = uri.user.decode() if isinstance(uri.user, bytes) else uri.user
+        host = uri.host.decode() if isinstance(uri.host, bytes) else uri.host
+        room = ('%s@%s' % (user, host)).lower()
+        if allowed:
+            def _matches(watch):
+                watch = re.sub('^sips?:', '', watch).lower()
+                return room == watch if '@' in watch else room.split('@', 1)[0] == watch
+            if not any(_matches(w) for w in allowed):
+                return None
+        elif not getattr(session, 'remote_focus', False):
+            return None
+
+        def _same_room(other):
+            if other is session or other.state in (None, 'terminating', 'terminated'):
+                return False
+            other_uri = other.remote_identity.uri
+            other_user = other_uri.user.decode() if isinstance(other_uri.user, bytes) else other_uri.user
+            other_host = other_uri.host.decode() if isinstance(other_uri.host, bytes) else other_uri.host
+            return ('%s@%s' % (other_user, other_host)).lower() == room
+
+        # The invitation is forked to every registered contact, possibly more
+        # than one of ours: answer one and turn the others down.
+        joining = [other for other in getattr(self, '_conference_joins', []) if other.state not in (None, 'terminating', 'terminated')]
+        if any(_same_room(other) for other in list(self.connected_sessions) + joining):
+            show_notice(_ts() + 'Invited to %s again, already joined' % room, bold=False)
+            session.reject(486)
+            return False
+        joining.append(session)
+        self._conference_joins = joining
+        session._joined_by_invitation = True
+        offered = ', '.join(stream.type for stream in session.proposed_streams) or 'no supported media'
+        show_notice(_ts() + 'Invited to %s with %s, joining' % (room, offered))
+        return True
+
+    def _complete_invitation_media(self, session):
+        # The conference server's invitation may carry fewer streams than we
+        # asked for on the command line (--chat, --video): add the missing
+        # ones once the session is up.
+        if session.state != 'connected':
+            return
+        have = set(stream.type for stream in session.streams or [])
+        wanted = []
+        if getattr(self.options, 'with_chat', False) and 'chat' not in have:
+            wanted.append('chat')
+        if getattr(self.options, 'with_video', False) and 'video' not in have:
+            wanted.append('video')
+        tried = session.__dict__.setdefault('_invitation_media_tried', set())
+        wanted = [name for name in wanted if name not in tried]
+        if not wanted:
+            return
+        stream_name = wanted[0]
+        tried.add(stream_name)
+        try:
+            OutgoingProposalHandler(session, **{stream_name: True}).start()
+        except (IllegalStateError, ValueError) as e:
+            show_notice('Cannot add %s to %s: %s' % (stream_name, session.remote_identity.uri, e))
+            return
+        show_notice(_ts() + 'Adding %s to the conference session' % stream_name, bold=False)
+        if len(wanted) > 1:
+            # one proposal at a time: try the next one when this has settled
+            reactor.callLater(5, self._complete_invitation_media, session)
 
     def _NH_SIPSessionNewOutgoing(self, notification):
         session = notification.sender
@@ -3787,6 +3865,11 @@ class SIPSessionApplication(SIPApplication):
             # --invite-on-join is deferred until the first conference-info NOTIFY,
             # so users already in the room are not invited again.
             session._invite_pending = bool(_split_users(self.options.invite))
+
+        if getattr(session, '_joined_by_invitation', False):
+            joined = ', '.join(stream.type for stream in session.streams or [])
+            show_notice(_ts() + 'Joined %s with %s' % (session.remote_identity.uri, joined))
+            reactor.callLater(1, self._complete_invitation_media, session)
 
         if self.options.auto_hangup_interval is not None:
             if self.options.auto_hangup_interval == 0:
@@ -4351,6 +4434,14 @@ class SIPSessionApplication(SIPApplication):
         notification_center.remove_observer(self, sender=notification.sender)
 
     def _NH_MediaStreamDidNotInitialize(self, notification):
+        # A stream that fails to initialize is dropped from the answer (port 0)
+        # while the others go on, so say which one and why.
+        stream = notification.sender
+        session = getattr(stream, 'session', None)
+        remote = session.remote_identity.uri if session is not None and session.remote_identity is not None else 'unknown'
+        reason = getattr(notification.data, 'reason', None) or 'unknown reason'
+        transport = getattr(notification.data, 'transport', None)
+        show_notice(_ts() + 'Could not set up %s with %s%s: %s' % (getattr(stream, 'type', 'media'), remote, ' (%s)' % transport if transport else '', reason))
         if self.must_exit:
             self.stop()
 
@@ -4514,30 +4605,53 @@ class SIPSessionApplication(SIPApplication):
             chat_stream.send_message(json.dumps(payload), content_type=radio_ptt.CONTENT_TYPE)
             show_notice('%s radio PTT %s id=%s -> %s' % (datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], action, command_id, radio['aor']), bold=False)
 
+    REINVITE_INTERVAL = 60
+
     def _send_pending_invites(self, session, info):
-        if not getattr(session, '_invite_pending', False):
-            return
-        session._invite_pending = False
-        if session.state != 'connected':
-            return
         present = set()
         for user in info.users:
             entity = user.entity or ''
             aor = entity.split(':', 1)[1] if ':' in entity else entity
             present.add(aor.lower())
+        # the roster as last seen, for the periodic re-invite
+        session._conference_present = present
+        if not getattr(session, '_invite_pending', False):
+            return
+        session._invite_pending = False
+        if session.state != 'connected':
+            return
         for uri in _split_users(self.options.invite):
             aor = re.sub('^sips?:', '', uri).lower()
             if aor in present:
-                show_notice('%s is already in the conference' % aor, bold=False)
+                show_notice(_ts() + '%s is already in the conference' % aor, bold=False)
                 continue
-            if re.match('^(sip:|sips:)', uri) is None:
-                uri = 'sip:%s' % uri
-            try:
-                session.conference.add_participant(SIPURI.parse(uri))
-            except Exception as e:
-                show_notice('Could not invite %s: %s' % (uri, e))
-            else:
-                show_notice('Inviting %s to the conference' % uri, bold=False)
+            if aor in self.invite_refused:
+                show_notice(_ts() + '%s declined to join before, not inviting' % aor, bold=False)
+                continue
+            self._invite_participant(session, uri)
+        # -R: keep inviting whoever is not in the conference
+        if self.options.auto_reconnect:
+            reactor.callLater(self.REINVITE_INTERVAL, self._reinvite_missing, session)
+
+    def _invite_participant(self, session, uri):
+        if re.match('^(sip:|sips:)', uri) is None:
+            uri = 'sip:%s' % uri
+        try:
+            session.conference.add_participant(SIPURI.parse(uri))
+        except Exception as e:
+            show_notice(_ts() + 'Could not invite %s: %s' % (uri, e))
+        else:
+            show_notice(_ts() + 'Inviting %s to the conference' % uri, bold=False)
+
+    def _reinvite_missing(self, session):
+        if self.stopping or session.state != 'connected':
+            return
+        present = getattr(session, '_conference_present', set())
+        for uri in _split_users(self.options.invite):
+            aor = re.sub('^sips?:', '', uri).lower()
+            if aor not in present and aor not in self.invite_refused:
+                self._invite_participant(session, uri)
+        reactor.callLater(self.REINVITE_INTERVAL, self._reinvite_missing, session)
 
     def _check_hangup_on_leave(self, session, info):
         # --hangup-on-leave: once at least one watched user has been seen in
@@ -4566,7 +4680,7 @@ class SIPSessionApplication(SIPApplication):
                 seen.add(watch)
                 still_present = True
         if seen and not still_present:
-            show_notice('%s left the conference, hanging up' % ', '.join(sorted(seen)))
+            show_notice(_ts() + '%s left the conference, hanging up' % ', '.join(sorted(seen)))
             session.end()
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
@@ -4964,13 +5078,45 @@ class SIPSessionApplication(SIPApplication):
         call_initializer.start()
 
     def _NH_SIPConferenceGotAddParticipantProgress(self, notification):
-        show_notice('Invitation to %s: %s %s' % (notification.data.participant, notification.data.code, notification.data.reason), bold=False)
+        show_notice(_ts() + 'Invitation to %s: %s %s' % (notification.data.participant, notification.data.code, notification.data.reason), bold=False)
+
+    # Final answers of an invited party that mean "I do not want to join" (the
+    # invitee pressed reject or decline); anything else (no answer, offline,
+    # busy with another call) is worth trying again.
+    INVITE_REFUSAL_CODES = (600, 603)
+
+    def _NH_SIPReferralGotNotify(self, notification):
+        # The progress of an invitation, as the conference server reports it in
+        # the NOTIFYs of the REFER (a sipfrag: "SIP/2.0 <code> <reason>"). The
+        # SDK only reports the provisional and 2xx ones, so the final answer
+        # of the invitee is taken from here.
+        data = notification.data
+        if getattr(data, 'event', None) != 'refer' or not getattr(data, 'body', None):
+            return
+        body = data.body.decode(errors='replace') if isinstance(data.body, bytes) else str(data.body)
+        match = re.match(r'\s*SIP/2\.0\s+(\d{3})\s*([^\r\n]*)', body)
+        if match is None:
+            return
+        code, reason = int(match.group(1)), match.group(2).strip()
+        refer_to = getattr(notification.sender, 'refer_to_header', None)
+        if refer_to is None or str(refer_to.parameters.get('method', 'INVITE')).upper() != 'INVITE':
+            return
+        participant = re.split('[;?>]', re.sub('^<?sips?:', '', str(refer_to.uri)), maxsplit=1)[0].lower()
+        if code < 300:
+            return
+        if code in self.INVITE_REFUSAL_CODES:
+            self.invite_refused.add(participant)
+            show_notice(_ts() + '%s declined to join: %d %s (will not be invited again)' % (participant, code, reason))
+        else:
+            show_notice(_ts() + 'Invitation to %s ended: %d %s' % (participant, code, reason), bold=False)
 
     def _NH_SIPConferenceDidAddParticipant(self, notification):
-        show_notice('Invitation to %s accepted by the conference server' % notification.data.participant, bold=False)
+        # the REFER subscription ended; the invitee's answer, when it was not
+        # a success, is reported from its NOTIFYs (_NH_SIPReferralGotNotify)
+        show_notice(_ts() + 'Invitation to %s finished' % notification.data.participant, bold=False)
 
     def _NH_SIPConferenceDidNotAddParticipant(self, notification):
-        show_notice('Invitation to %s failed: %s %s' % (notification.data.participant, notification.data.code, notification.data.reason))
+        show_notice(_ts() + 'Invitation to %s failed: %s %s' % (notification.data.participant, notification.data.code, notification.data.reason))
 
     def _NH_SIPIncomingReferralGotRefer(self, notification):
         # --join-when-invited: a conference focus invites us with an
@@ -4985,12 +5131,12 @@ class SIPSessionApplication(SIPApplication):
         def _aor(value):
             value = str(value or '').strip().strip('<>')
             value = re.sub('^sips?:', '', value)
-            return re.split('[;?>]', value, 1)[0].lower()
+            return re.split('[;?>]', value, maxsplit=1)[0].lower()
 
         room = _aor(getattr(refer_to, 'uri', refer_to))
         inviter = _aor(getattr(from_header, 'uri', ''))
         if not room or '@' not in room:
-            show_notice('Ignoring invitation with invalid Refer-To: %s' % refer_to)
+            show_notice(_ts() + 'Ignoring invitation with invalid Refer-To: %s' % refer_to)
             try:
                 referral.reject(400)
             except Exception:
@@ -5002,7 +5148,7 @@ class SIPSessionApplication(SIPApplication):
                 watch = re.sub('^sips?:', '', watch).lower()
                 return aor == watch if '@' in watch else aor.split('@', 1)[0] == watch
             if not any(_matches(w, room) or _matches(w, inviter) for w in allowed):
-                show_notice('Rejected invitation from %s to %s (not in --join-when-invited)' % (inviter, room))
+                show_notice(_ts() + 'Rejected invitation from %s to %s (not in --join-when-invited)' % (inviter, room))
                 try:
                     referral.reject(403)
                 except Exception:
@@ -5011,7 +5157,7 @@ class SIPSessionApplication(SIPApplication):
 
         for session in self.connected_sessions:
             if _aor(session.remote_identity.uri) == room:
-                show_notice('Invited by %s to %s, already joined' % (inviter, room), bold=False)
+                show_notice(_ts() + 'Invited by %s to %s, already joined' % (inviter, room), bold=False)
                 try:
                     referral.accept()
                     referral.end(200)
@@ -5020,18 +5166,18 @@ class SIPSessionApplication(SIPApplication):
                 return
 
         if self.outgoing_session is not None:
-            show_notice('Invited by %s to %s, but an outgoing session is in progress' % (inviter, room))
+            show_notice(_ts() + 'Invited by %s to %s, but an outgoing session is in progress' % (inviter, room))
             try:
                 referral.reject(486)
             except Exception:
                 pass
             return
 
-        show_notice('Invited by %s to %s, joining' % (inviter, room))
+        show_notice(_ts() + 'Invited by %s to %s, joining' % (inviter, room))
         try:
             referral.accept()
         except Exception as e:
-            show_notice('Could not accept invitation: %s' % e)
+            show_notice(_ts() + 'Could not accept invitation: %s' % e)
             return
         call_initializer = OutgoingCallInitializer(
             self.account, room,
@@ -6446,6 +6592,10 @@ def _restore_terminal():
         pass
 
 
+def _ts():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S ')
+
+
 def _split_users(value):
     if not value:
         return []
@@ -6496,7 +6646,7 @@ if __name__ == '__main__':
     parser.add_option('--auto-hangup', action='callback', callback=parse_handle_call_option, callback_args=('auto_hangup_interval',), help='Interval after which to hang up an established session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (hangup the session as soon as it connects).', metavar='[INTERVAL]')
     parser.add_option('-i', '--invite-on-join', type='string', dest='invite', default=None, help='Comma separated list of users (user@domain) to invite once the session is established, if the remote party is a conference focus.', metavar='A,B,...')
     parser.add_option('-l', '--hangup-on-leave', type='string', dest='hangup_on_leave', default=None, help='Comma separated list of users (user or user@domain). If the remote party is a conference focus, hang up once all of them have left the conference (only counts users that joined).', metavar='A,B,...')
-    parser.add_option('--join-when-invited', type='string', dest='join_when_invited', default=None, help='Do not call at start; wait and join a conference when invited to it (incoming REFER). Without a value any invitation is accepted; with =A,B,... and/or a target URI only invitations whose conference URI or inviter matches one of them (user or user@domain).', metavar='[=A,B,...]')
+    parser.add_option('--join-when-invited', type='string', dest='join_when_invited', default=None, help='Do not call at start; wait and join a conference when invited to it (the conference server calls us from the room; an incoming REFER is honored too). Without a value any invitation is accepted; with =A,B,... and/or a target URI only invitations whose conference URI or inviter matches one of them (user or user@domain).', metavar='[=A,B,...]')
     # --join-when-invited takes an optional value: the bare form means "any"
     sys.argv[1:] = ['--join-when-invited=*' if arg == '--join-when-invited' else arg for arg in sys.argv[1:]]
     parser.add_option('--shutdown-timeout', type='float', dest='shutdown_timeout', default=10, help='Seconds to wait for a graceful shutdown (sessions ended, accounts unregistered) before forcing the exit (default 10).', metavar='SECONDS')
