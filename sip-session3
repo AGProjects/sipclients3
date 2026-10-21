@@ -1199,6 +1199,8 @@ class OutgoingCallInitializer(object):
             if '.' not in self.target.host.decode() and not isinstance(self.account, BonjourAccount):
                 self.target.host = ('%s.%s' % (self.target.host.decode(), self.account.id.domain)).encode()
             lookup = DNSLookup()
+            self.lookup = lookup
+            SIPSessionApplication().pending_call = self
             notification_center = NotificationCenter()
             notification_center.add_observer(self, sender=lookup)
             settings = SIPSimpleSettings()
@@ -1252,9 +1254,26 @@ class OutgoingCallInitializer(object):
         handler = getattr(self, '_NH_%s' % notification.name, Null)
         handler(notification)
 
+    def cancel(self):
+        # Abort the call while it is still in DNS lookup. Needs a sipsimple
+        # with DNSLookup.cancel(); older ones just let the lookup run out.
+        self.cancelled = True
+        cancel = getattr(getattr(self, 'lookup', None), 'cancel', None)
+        if cancel is not None:
+            cancel()
+        else:
+            show_notice('DNS lookup cannot be interrupted, the call will be dropped when it completes')
+
     def _NH_DNSLookupDidSucceed(self, notification):
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
+        application = SIPSessionApplication()
+        if application.pending_call is self:
+            application.pending_call = None
+        if getattr(self, 'cancelled', False) or application.stopping:
+            show_notice('Call to %s cancelled' % self.target)
+            self._playback_end(failed_reason='outgoing-cancelled')
+            return
         session = Session(self.account)
         session._load = self.load
         notification_center.add_observer(self, sender=session)
@@ -1280,9 +1299,16 @@ class OutgoingCallInitializer(object):
         application.outgoing_session = session
 
     def _NH_DNSLookupDidFail(self, notification):
-        show_notice('Call to %s failed: DNS lookup error: %s' % (self.target, notification.data.error))
         notification_center = NotificationCenter()
         notification_center.remove_observer(self, sender=notification.sender)
+        application = SIPSessionApplication()
+        if application.pending_call is self:
+            application.pending_call = None
+        if getattr(self, 'cancelled', False):
+            show_notice('Call to %s cancelled' % self.target)
+            self._playback_end(failed_reason='outgoing-cancelled')
+            return
+        show_notice('Call to %s failed: DNS lookup error: %s' % (self.target, notification.data.error))
         self._playback_end(failed_reason='outgoing-failed-DNS')
         self.reconnect(10)
 
@@ -2219,6 +2245,7 @@ class SIPSessionApplication(SIPApplication):
         self.active_session = None
         self.message_session_to = None
         self.outgoing_session = None
+        self.pending_call = None  # OutgoingCallInitializer still in DNS lookup
         self.connected_sessions = []
         self.sessions_with_proposals = set()
         self.hangup_timers = {}
@@ -5447,6 +5474,9 @@ class SIPSessionApplication(SIPApplication):
         elif self.outgoing_session is not None:
             show_notice('Cancelling SIP session...')
             self.outgoing_session.end()
+        elif self.pending_call is not None:
+            show_notice('Cancelling call to %s during DNS lookup...' % self.pending_call.target)
+            self.pending_call.cancel()
         else:
             try:
                 message_session = next((session for session in self.message_sessions if session.target == self.message_session_to and self.account == session.account))
