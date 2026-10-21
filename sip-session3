@@ -4413,15 +4413,27 @@ class SIPSessionApplication(SIPApplication):
             text += ' (%s)' % radio['reason']
         return text
 
-    def _CH_ptt(self, action='press', target=None):
+    def _CH_ptt(self, action=None, target=None):
         session = self.active_session
         if session is None:
             show_notice('There is no active session')
             return
-        if action not in ('press', 'release', 'status'):
-            show_notice('Usage: /ptt [press|release|status] [participant]')
-            return
+        if action not in (None, 'press', 'release', 'status'):
+            if target is not None:
+                show_notice('Usage: /ptt [press|release|status] [participant]')
+                return
+            action, target = None, action  # /ptt <participant> toggles that radio
         radios = getattr(session, '_radio_ptt_endpoints', None) or {}
+        if action is None:
+            # /ptt without an action toggles: release while a radio is
+            # keying or on air (its timer still running), press otherwise.
+            # Scoped to the named participant when one is given.
+            scope = radios.values()
+            if target is not None:
+                bare = re.sub('^sips?:', '', target)
+                scope = [r for r in scope if bare in (r['aor'], re.sub('^sips?:', '', r['entity']))]
+            busy = any(r['state'] in ('keying', 'transmitting') for r in scope)
+            action = 'release' if busy else 'press'
         if action == 'status' or not radios:
             if not radios:
                 show_notice('No participant in this conference has a radio')
@@ -4429,30 +4441,32 @@ class SIPSessionApplication(SIPApplication):
                 show_notice(self._format_radio_ptt(radio))
             return
         if target is None:
-            if len(radios) > 1:
-                show_notice('Several radios in this conference, specify one: %s' % ', '.join(sorted(r['aor'] for r in radios.values())))
-                return
-            radio = next(iter(radios.values()))
+            # Conference wide: press keys every radio, release stops those
+            # keying or on air (all of them if none is).
+            targets = list(radios.values())
+            if action == 'release':
+                active = [r for r in targets if r['state'] in ('keying', 'transmitting')]
+                targets = active or targets
         else:
             target = re.sub('^sips?:', '', target)
-            matches = [r for r in radios.values() if target in (r['aor'], re.sub('^sips?:', '', r['entity']))]
-            if len(matches) != 1:
-                show_notice('No unique radio matches %s; radios: %s' % (target, ', '.join(sorted(r['aor'] for r in radios.values()))))
+            targets = [r for r in radios.values() if target in (r['aor'], re.sub('^sips?:', '', r['entity']))]
+            if not targets:
+                show_notice('No radio matches %s; radios: %s' % (target, ', '.join(sorted(r['aor'] for r in radios.values()))))
                 return
-            radio = matches[0]
         try:
             chat_stream = next(stream for stream in session.streams if stream.type == 'chat')
         except StopIteration:
             show_notice('The active session has no chat stream')
             return
-        if action == 'press':
-            command_id = radio_ptt.new_command_id()
-            session._radio_ptt_last_id = command_id
-        else:
-            command_id = getattr(session, '_radio_ptt_last_id', None) or radio_ptt.new_command_id()
-        payload = {'action': action, 'id': command_id, 'endpoint': radio['entity']}
-        chat_stream.send_message(json.dumps(payload), content_type=radio_ptt.CONTENT_TYPE)
-        show_notice('%s radio PTT %s id=%s -> %s' % (datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], action, command_id, radio['aor']), bold=False)
+        last_ids = session.__dict__.setdefault('_radio_ptt_last_ids', {})
+        for radio in targets:
+            if action == 'press':
+                command_id = last_ids[radio['entity']] = radio_ptt.new_command_id()
+            else:
+                command_id = last_ids.get(radio['entity']) or radio_ptt.new_command_id()
+            payload = {'action': action, 'id': command_id, 'endpoint': radio['entity']}
+            chat_stream.send_message(json.dumps(payload), content_type=radio_ptt.CONTENT_TYPE)
+            show_notice('%s radio PTT %s id=%s -> %s' % (datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], action, command_id, radio['aor']), bold=False)
 
     def _NH_RTPStreamICENegotiationDidSucceed(self, notification):
         show_notice(" ")
@@ -6119,7 +6133,7 @@ class SIPSessionApplication(SIPApplication):
         lines.append('  /remove {chat|audio}: remove a stream from the current session')
         lines.append('  /add_participant {user@domain}: add the specified user to the conference')
         lines.append('  /remove_participant {user@domain}: remove the specified user from the conference')
-        lines.append('  /ptt [press|release|status] [participant]: key / unkey the radio of a conference participant')
+        lines.append('  /ptt [press|release|status] [participant]: key / unkey all radios in the conference, or only those of the given participant; without an action it toggles')
         lines.append('  /transfer {user@domain}: transfer (using blind transfer) callee to the specified destination')
         lines.append('  /nickname nick: set the user nickname whithin a conference')
         show_notice(lines, bold=False)
