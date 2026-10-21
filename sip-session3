@@ -2699,14 +2699,14 @@ class SIPSessionApplication(SIPApplication):
         # The SDK shutdown waits for every session to terminate; one stuck
         # in DNS or INVITE never does and SIPApplicationDidEnd never comes.
         # Do not leave the user at a dead prompt.
-        watchdog = Timer(10, self._force_exit)
+        watchdog = Timer(self.options.shutdown_timeout, self._force_exit)
         watchdog.daemon = True
         watchdog.start()
 
     def _force_exit(self):
         if self.stopped_event.is_set():
             return
-        show_notice('Shutdown did not complete in 10 seconds, forcing exit')
+        show_notice('Shutdown did not complete in %s seconds, forcing exit' % self.options.shutdown_timeout)
         try:
             UI().stop()
         except Exception:
@@ -6499,6 +6499,7 @@ if __name__ == '__main__':
     parser.add_option('--join-when-invited', type='string', dest='join_when_invited', default=None, help='Do not call at start; wait and join a conference when invited to it (incoming REFER). Without a value any invitation is accepted; with =A,B,... and/or a target URI only invitations whose conference URI or inviter matches one of them (user or user@domain).', metavar='[=A,B,...]')
     # --join-when-invited takes an optional value: the bare form means "any"
     sys.argv[1:] = ['--join-when-invited=*' if arg == '--join-when-invited' else arg for arg in sys.argv[1:]]
+    parser.add_option('--shutdown-timeout', type='float', dest='shutdown_timeout', default=10, help='Seconds to wait for a graceful shutdown (sessions ended, accounts unregistered) before forcing the exit (default 10).', metavar='SECONDS')
     options, args = parser.parse_args()
     if options.join_when_invited is not None:
         options.join_when_invited = [item for item in _split_users(options.join_when_invited) if item != '*']
@@ -6518,5 +6519,17 @@ if __name__ == '__main__':
     application.start(target, options, filepath)
 
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    # SIGTERM/SIGHUP (systemctl stop, closed terminal): shut down gracefully,
+    # ending sessions and unregistering, bounded by --shutdown-timeout. A
+    # second signal exits immediately.
+    def _graceful_stop(signum, frame):
+        if application.stopping:
+            _restore_terminal()
+            os._exit(1)
+        application.stop()
+    signal.signal(signal.SIGTERM, _graceful_stop)
+    signal.signal(signal.SIGHUP, _graceful_stop)
+
     application.stopped_event.wait()
     sleep(0.1)
