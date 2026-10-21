@@ -1,6 +1,7 @@
 sipclients (5.6.4) unstable; urgency=medium
 
   * Added auto join, leave and hangup for conferences
+  * About DNS queries on exit
   * Accept str or bytes for the stream encryption cipher
   * Added radio PTT support for conferences
   * Show when receive conf-info updates
