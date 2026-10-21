@@ -2373,6 +2373,9 @@ class SIPSessionApplication(SIPApplication):
         notification_center.add_observer(self, name='DefaultAudioDeviceDidChange')
         notification_center.add_observer(self, name='SessionMustReconnect')
         notification_center.add_observer(self, name='SIPIncomingReferralGotRefer')
+        notification_center.add_observer(self, name='SIPConferenceGotAddParticipantProgress')
+        notification_center.add_observer(self, name='SIPConferenceDidAddParticipant')
+        notification_center.add_observer(self, name='SIPConferenceDidNotAddParticipant')
 
         log.level.current = log.level.WARNING # get rid of twisted messages
         control_bindings={'s': 'trace sip',
@@ -2600,6 +2603,10 @@ class SIPSessionApplication(SIPApplication):
             settings.tls.certificate = os.path.join(config_directory, 'tls/default.crt')
             settings.tls.verify_server = True
             settings.save()
+
+        if self.target is None and getattr(self.options, 'join_when_invited', None) is not None:
+            allowed = self.options.join_when_invited
+            show_notice('Waiting to be invited to %s' % (', '.join(allowed) if allowed else 'any conference'))
 
         if self.target is not None:
             if self.filepath:
@@ -4956,6 +4963,15 @@ class SIPSessionApplication(SIPApplication):
         call_initializer = OutgoingCallInitializer(self.account, target, audio=audio_option=='+audio', chat=True)
         call_initializer.start()
 
+    def _NH_SIPConferenceGotAddParticipantProgress(self, notification):
+        show_notice('Invitation to %s: %s %s' % (notification.data.participant, notification.data.code, notification.data.reason), bold=False)
+
+    def _NH_SIPConferenceDidAddParticipant(self, notification):
+        show_notice('Invitation to %s accepted by the conference server' % notification.data.participant, bold=False)
+
+    def _NH_SIPConferenceDidNotAddParticipant(self, notification):
+        show_notice('Invitation to %s failed: %s %s' % (notification.data.participant, notification.data.code, notification.data.reason))
+
     def _NH_SIPIncomingReferralGotRefer(self, notification):
         # --join-when-invited: a conference focus invites us with an
         # out-of-dialog REFER whose Refer-To is the room URI.
@@ -6480,7 +6496,7 @@ if __name__ == '__main__':
     parser.add_option('--auto-hangup', action='callback', callback=parse_handle_call_option, callback_args=('auto_hangup_interval',), help='Interval after which to hang up an established session (disabled by default). If the option is specified but the interval is not, it defaults to 0 (hangup the session as soon as it connects).', metavar='[INTERVAL]')
     parser.add_option('-i', '--invite-on-join', type='string', dest='invite', default=None, help='Comma separated list of users (user@domain) to invite once the session is established, if the remote party is a conference focus.', metavar='A,B,...')
     parser.add_option('-l', '--hangup-on-leave', type='string', dest='hangup_on_leave', default=None, help='Comma separated list of users (user or user@domain). If the remote party is a conference focus, hang up once all of them have left the conference (only counts users that joined).', metavar='A,B,...')
-    parser.add_option('--join-when-invited', type='string', dest='join_when_invited', default=None, help='Join a conference when invited to it (incoming REFER). Without a value any invitation is accepted; with =A,B,... only invitations whose conference URI or inviter matches one of the listed users (user or user@domain).', metavar='[=A,B,...]')
+    parser.add_option('--join-when-invited', type='string', dest='join_when_invited', default=None, help='Do not call at start; wait and join a conference when invited to it (incoming REFER). Without a value any invitation is accepted; with =A,B,... and/or a target URI only invitations whose conference URI or inviter matches one of them (user or user@domain).', metavar='[=A,B,...]')
     # --join-when-invited takes an optional value: the bare form means "any"
     sys.argv[1:] = ['--join-when-invited=*' if arg == '--join-when-invited' else arg for arg in sys.argv[1:]]
     options, args = parser.parse_args()
@@ -6489,6 +6505,13 @@ if __name__ == '__main__':
 
     target = args[0] if args else None
     filepath = args[1] if len(args) == 2 else None
+
+    if options.join_when_invited is not None and target is not None:
+        # With --join-when-invited the target is not called: it is the
+        # conference we wait to be invited to.
+        options.join_when_invited.append(target)
+        target = None
+        filepath = None
 
     _save_terminal()
     application = SIPSessionApplication()
