@@ -514,14 +514,14 @@ class RTPStatisticsThread(Thread):
                     rx_kbps, tx_kbps = self._bandwidth_kbps(stream, stats)
                     rx_pkts = stats['rx']['packets']
                     loss = 100.0 * stats['rx']['packets_lost'] / rx_pkts if rx_pkts else 0
-                    base = ('%s RTP %s: RTT=%d ms, loss=%.1f%%, '
-                            'jitter RX/TX=%d/%d ms, bw RX/TX=%.0f/%.0f kbps' % (
+                    base = ('%s %s RTT=%4d ms, loss=%5.1f%%, '
+                            'RX/TX=%4.0f/%4.0f kbps, %s:%s <-> %s:%s' % (
                                 ts, stream.type,
                                 stats['rtt']['avg'] / 1000,
                                 loss,
-                                stats['rx']['jitter']['avg'] / 1000,
-                                stats['tx']['jitter']['avg'] / 1000,
-                                rx_kbps, tx_kbps))
+                                rx_kbps, tx_kbps,
+                                stream.local_rtp_address, stream.local_rtp_port,
+                                stream.remote_rtp_address, stream.remote_rtp_port))
                     if stream.type == 'video':
                         base += ', resolution=%s' % self._video_resolution(stream)
                         # Push the same numbers to the on-screen video

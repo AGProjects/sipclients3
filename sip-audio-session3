@@ -18,7 +18,7 @@ from eventlib import api
 from itertools import chain
 from optparse import OptionParser
 from threading import Thread
-from time import sleep
+from time import sleep, monotonic
 from lxml import html
 
 from application import log
@@ -113,6 +113,25 @@ class RTPStatisticsThread(Thread):
         self.setDaemon(True)
         self.application = application
         self.stopped = False
+        # per-stream byte counters for bandwidth deltas, keyed by id(stream)
+        self._last_bytes = {}
+
+    @staticmethod
+    def _bytes(direction):
+        # sipsimple statistics may use 'bytes' or 'octets' depending on version
+        return direction.get('bytes', direction.get('octets', 0)) or 0
+
+    def _bandwidth_kbps(self, stream, stats):
+        key = id(stream)
+        rx_now = self._bytes(stats['rx'])
+        tx_now = self._bytes(stats['tx'])
+        rx_prev, tx_prev, t_prev = self._last_bytes.get(key, (rx_now, tx_now, None))
+        t_now = monotonic()
+        self._last_bytes[key] = (rx_now, tx_now, t_now)
+        if t_prev is None:
+            return 0.0, 0.0
+        dt = max(t_now - t_prev, 0.001)
+        return (rx_now - rx_prev) * 8 / 1000.0 / dt, (tx_now - tx_prev) * 8 / 1000.0 / dt
 
     def run(self):
         notification_center = NotificationCenter()
@@ -136,7 +155,8 @@ class RTPStatisticsThread(Thread):
                     if lost_rtp_count:
                         notification_center.post_notification('RTPWasLost', sender=self.application.active_session, data=NotificationData(count=lost_rtp_count))
 
-                    msg = '%s RTP audio statistics: RTT=%d ms, packet loss=%.1f%%, jitter RX/TX=%d/%d ms\n' % (datetime.now().replace(microsecond=0), stats['rtt']['avg'] / 1000, 100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0, stats['rx']['jitter']['avg'] / 1000, stats['tx']['jitter']['avg'] / 1000)
+                    rx_kbps, tx_kbps = self._bandwidth_kbps(audio_stream, stats)
+                    msg = '%s audio RTT=%4d ms, loss=%5.1f%%, RX/TX=%4.0f/%4.0f kbps, %s:%s <-> %s:%s\n' % (datetime.now().replace(microsecond=0), stats['rtt']['avg'] / 1000, 100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0, rx_kbps, tx_kbps, audio_stream.local_rtp_address, audio_stream.local_rtp_port, audio_stream.remote_rtp_address, audio_stream.remote_rtp_port)
                     notification_center.post_notification('RTPStatisticsLog', sender=self.application.active_session, data=NotificationData(line=msg))
                 
                 try:
@@ -146,7 +166,8 @@ class RTPStatisticsThread(Thread):
                 else:
                     stats = video_stream.statistics
                     if stats is not None:
-                        msg = '%s RTP video statistics: RTT=%d ms, packet loss=%.1f%%, jitter RX/TX=%d/%d ms\n' % (datetime.now().replace(microsecond=0), stats['rtt']['avg'] / 1000, 100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0, stats['rx']['jitter']['avg'] / 1000, stats['tx']['jitter']['avg'] / 1000)
+                        rx_kbps, tx_kbps = self._bandwidth_kbps(video_stream, stats)
+                        msg = '%s video RTT=%4d ms, loss=%5.1f%%, RX/TX=%4.0f/%4.0f kbps, %s:%s <-> %s:%s\n' % (datetime.now().replace(microsecond=0), stats['rtt']['avg'] / 1000, 100.0 * stats['rx']['packets_lost'] / stats['rx']['packets'] if stats['rx']['packets'] else 0, rx_kbps, tx_kbps, video_stream.local_rtp_address, video_stream.local_rtp_port, video_stream.remote_rtp_address, video_stream.remote_rtp_port)
                         notification_center.post_notification('RTPStatisticsLog', sender=self.application.active_session, data=NotificationData(line=msg))
                 sleep(5)
 
