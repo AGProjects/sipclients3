@@ -304,6 +304,7 @@ from sipsimple.payloads.iscomposing import IsComposingMessage, IsComposingDocume
 from sipsimple.session import IllegalStateError, Session
 from sipsimple.streams import MediaStreamRegistry
 from sipsimple.streams.msrp.filetransfer import FileSelector
+from msrplib.session import contains_mime_type
 from sipsimple.streams.msrp.chat import CPIMPayload, CPIMHeader, CPIMNamespace, SimplePayload, CPIMParserError, ChatIdentity, OTREncryption, ChatStream
 from sipsimple.core import FrameBufferVideoRenderer
 from sipclient.video import VideoWindow
@@ -4358,6 +4359,33 @@ class SIPSessionApplication(SIPApplication):
         head = RichText('%s> ' % remote_identity, foreground='blue')
         ui = UI()
         ui.writelines([head + line for line in text.splitlines()])
+        self._send_chat_displayed(notification.sender, message)
+
+    def _send_chat_displayed(self, stream, message):
+        # A terminal shows a message the moment it arrives: answer a request
+        # for a displayed receipt (RFC 5438) on the stream it came over.
+        # Delivery needs nothing, the MSRP success report already says it.
+        if not getattr(self.account.sms, 'enable_imdn', False):
+            return
+        session = getattr(stream, 'session', None)
+        if session is None or session.remote_focus:
+            return      # in a room every participant would answer
+        headers = message.additional_headers or ()
+        message_id = next((h.value for h in headers if h.name == 'Message-ID'), None)
+        disposition = next((h.value for h in headers if h.name == 'Disposition-Notification'), '')
+        if not message_id or 'display' not in [d.strip() for d in disposition.split(',')]:
+            return
+        if not contains_mime_type(stream.remote_accept_wrapped_types or [], IMDNDocument.content_type):
+            return
+        content = IMDNDocument.create(message_id=message_id,
+                                      datetime=message.timestamp,
+                                      recipient_uri=str(stream.local_identity.uri),
+                                      notification=DisplayNotification('displayed'))
+        ns = CPIMNamespace('urn:ietf:params:imdn', 'imdn')
+        try:
+            stream.send_message(content, content_type=IMDNDocument.content_type, additional_headers=[CPIMHeader('Message-ID', ns, str(uuid.uuid4()))])
+        except Exception as e:
+            show_notice('Cannot send displayed receipt: %s' % e, bold=False)
 
     def _handle_radio_ptt_message(self, stream, message):
         session = stream.session
