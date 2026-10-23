@@ -2470,6 +2470,9 @@ class SIPSessionApplication(SIPApplication):
             self.account.sip.register = True
 
         show_notice('Using account %s' % self.account.id, bold=False)
+        # Chat streams (incoming ones are built inside sipsimple) follow the
+        # account: with OTR off they neither offer nor answer it.
+        ChatStream.enable_otr = otr_enabled_for(self.account)
         ui.prompt = Prompt(self.account.id, foreground='default')
 
         self.logger.start()
@@ -4275,7 +4278,7 @@ class SIPSessionApplication(SIPApplication):
                     pass
 
     def _NH_ChatStreamOTRError(self, notification):
-        show_notice("Chat encryption error: %s", notification.data.error, bold=False)
+        show_notice("Chat encryption error: %s" % notification.data.error, bold=False)
 
     def _NH_ChatStreamOTRVerifiedStateChanged(self, notification):
         self._update_prompt()
