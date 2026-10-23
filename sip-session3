@@ -4338,12 +4338,16 @@ class SIPSessionApplication(SIPApplication):
             except Exception:
                 text = content
             else:
+                # head-only markup (<title>, <meta>) yields no <body>
                 body = doc.body
-                if body.text is not None:
-                    body.text = body.text.lstrip('\n')
-                for br in body.xpath('.//br'):
-                    br.tail = '\n' + (br.tail or '')
-                text = body.text_content()
+                if body is None:
+                    text = doc.text_content()
+                else:
+                    if body.text is not None:
+                        body.text = body.text.lstrip('\n')
+                    for br in body.xpath('.//br'):
+                        br.tail = '\n' + (br.tail or '')
+                    text = body.text_content()
         else:
             # text/plain is not markup: parsing it as HTML drops anything
             # that looks like a tag and fails on a plain string
